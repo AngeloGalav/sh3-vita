@@ -14,6 +14,7 @@ typedef struct CPU {
     double st[8];
     uint32_t ftop;
     uint32_t fsw, fcw;
+    uint64_t mm[8];       // MMX (scalar emulation; emms is a no-op: no aliasing with st[])
 } CPU;
 
 typedef void (*gfn)(CPU *c);
@@ -71,6 +72,51 @@ double rt_f80_load(const uint8_t *p);
 void rt_f80_store(uint8_t *p, double v);
 void rt_fsave(CPU *c, uint32_t addr);
 void rt_frstor(CPU *c, uint32_t addr);
+
+// --- MMX (J1): the game code outside the CRI codec only needs these forms
+// (4-tap box filter at 0x6321d3). Scalar lane emulation; validated against Unicorn
+// in recomp/difftest.py. ---
+static inline uint64_t rt_mmx_punpcklbw(uint64_t d, uint64_t s) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        r |= ((d >> (i * 8)) & 0xffu) << (i * 16);
+        r |= ((s >> (i * 8)) & 0xffu) << (i * 16 + 8);
+    }
+    return r;
+}
+static inline uint64_t rt_mmx_punpckhbw(uint64_t d, uint64_t s) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        r |= ((d >> (32 + i * 8)) & 0xffu) << (i * 16);
+        r |= ((s >> (32 + i * 8)) & 0xffu) << (i * 16 + 8);
+    }
+    return r;
+}
+static inline uint64_t rt_mmx_paddw(uint64_t d, uint64_t s) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++)
+        r |= (((d >> (i * 16)) + (s >> (i * 16))) & 0xffffu) << (i * 16);
+    return r;
+}
+static inline uint64_t rt_mmx_psraw(uint64_t d, uint32_t n) {
+    if (n > 15) n = 15;  // >=16 saturates to the sign anyway
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        int32_t v = (int32_t)(int16_t)((d >> (i * 16)) & 0xffffu);
+        r |= (uint64_t)((uint32_t)(v >> n) & 0xffffu) << (i * 16);
+    }
+    return r;
+}
+static inline uint64_t rt_mmx_packuswb(uint64_t d, uint64_t s) {
+    uint64_t r = 0;
+    for (int i = 0; i < 4; i++) {
+        int32_t v = (int32_t)(int16_t)((d >> (i * 16)) & 0xffffu);
+        r |= (uint64_t)(v < 0 ? 0 : v > 255 ? 255 : v) << (i * 8);
+        int32_t w = (int32_t)(int16_t)((s >> (i * 16)) & 0xffffu);
+        r |= (uint64_t)(w < 0 ? 0 : w > 255 ? 255 : w) << ((i + 4) * 8);
+    }
+    return r;
+}
 
 // --- divers ---
 void rt_cpuid(uint32_t *a, uint32_t *b, uint32_t *c, uint32_t *d);

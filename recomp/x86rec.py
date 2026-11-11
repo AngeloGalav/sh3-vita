@@ -69,6 +69,8 @@ FLAGCOND = {"e": "zf", "ne": "!zf", "b": "cf", "ae": "!cf", "be": "(cf|zf)", "a"
             "s": "sf", "ns": "!sf", "o": "of", "no": "!of", "p": "pf", "np": "!pf"}
 NOFLAGS = {"mov", "movzx", "movsx", "lea", "push", "pop", "xchg", "not", "cdq", "nop", "wait", "leave",
            "cld", "std", "pushal", "popal", "pushfd", "jmp", "cpuid"}
+# MMX forms used by the game code outside the CRI codec (J1): box filter 0x6321d3 + emms 0x63b480.
+MMX_OPS = {"movq", "pxor", "punpcklbw", "punpckhbw", "paddw", "psraw", "packuswb", "emms"}
 FCONST = {0xE8: "1.0", 0xE9: "3.321928094887362348", 0xEA: "1.442695040888963407", 0xEB: "3.141592653589793239",
           0xEC: "0.301029995663981195", 0xED: "0.693147180559945309", 0xEE: "0.0"}
 
@@ -530,6 +532,59 @@ class Func:
                                 "pfmin", "pfnacc", "pfpnacc", "pi2fd", "pf2id", "pswapd", "movntq", "stmxcsr",
                                 "ldmxcsr", "prefetch", "prefetchnta", "prefetcht0"}
 
+    # ---------- MMX (J1) ----------
+    # Pure-MMX forms from MMX_OPS are emitted as scalar lane code (rt_mmx_* in x86rt.h).
+    # Returns False when the operands are not pure MMX (e.g. SSE movq with xmm) so the
+    # caller falls back to the SIMD report as before.
+    def mmx(self, ins):
+        mn = ins.mnemonic.split()[-1]
+        ops = ins.operands
+        for op in ops:
+            if op.type == X.X86_OP_REG and self.reg(ins, op.reg)[:2] != "mm":
+                return False
+
+        def rd64(op):
+            if op.type == X.X86_OP_REG:
+                return f"c->mm[{self.reg(ins, op.reg)[2:]}]"
+            if op.type == X.X86_OP_MEM:
+                return f"R64({self.addr(ins, op)})"
+            return None
+
+        def wr64(op, v):
+            if op.type == X.X86_OP_REG:
+                return f"c->mm[{self.reg(ins, op.reg)[2:]}]=(uint64_t)({v});"
+            if op.type == X.X86_OP_MEM:
+                return f"W64({self.addr(ins, op)},{v});"
+            return None
+
+        if mn == "emms":
+            return True  # mm[] is independent of the x87 stack here: nothing to do
+        if len(ops) != 2:
+            return False
+        if mn == "movq":
+            v = rd64(ops[1])
+            w = wr64(ops[0], v) if v else None
+        elif mn == "pxor":
+            a, v = rd64(ops[0]), rd64(ops[1])
+            w = wr64(ops[0], f"{a}^{v}") if a and v else None
+        elif mn in ("punpcklbw", "punpckhbw", "paddw", "packuswb"):
+            a, v = rd64(ops[0]), rd64(ops[1])
+            w = wr64(ops[0], f"rt_mmx_{mn}({a},{v})") if a and v else None
+        elif mn == "psraw":
+            a = rd64(ops[0])
+            if ops[1].type == X.X86_OP_IMM:
+                cnt = h(ops[1].imm & 0xffff)
+            else:
+                v = rd64(ops[1])
+                cnt = f"((uint32_t)({v})&0xffffu)" if v else None
+            w = wr64(ops[0], f"rt_mmx_psraw({a},{cnt})") if a and cnt else None
+        else:
+            return False
+        if w is None:
+            return False
+        self.emit(w)
+        return True
+
     def cond(self, cc):
         k = self.flagsrc
         if k:
@@ -819,6 +874,8 @@ class Func:
                 for l in lines:
                     self.out.append(self.sx(l))
             return True
+        if base in MMX_OPS and self.mmx(ins):
+            return True
         if self.is_simd(ins) or base in {"movss", "mulps", "addps", "subps", "mulss", "shufps", "movaps", "movups",
                                           "mulsd", "addsd", "subsd", "divsd", "mulpd", "addpd", "movapd", "andpd",
                                           "andps", "xorps", "xorpd", "orps", "orpd", "andnps", "movlpd", "movhps",
@@ -834,7 +891,7 @@ class Func:
             self.string(ins)
             return True
 
-        if base in NOFLAGS or base.startswith("set") or base.startswith("j"):
+        if base in NOFLAGS or base.startswith("set") or base.startswith("j") or base.startswith("cmov"):
             pass
         else:
             self.flagsrc = None
@@ -896,15 +953,33 @@ class Func:
                 body = f"r=(d>>n)|(s<<(32u-n)); cf=(d>>(n-1u))&1u;"
             E(f"{{ uint32_t n=({cnt})&31u, d={d}, s={s_}, r; if (n) {{ {body} of=((r^d)>>31)&1u; "
               f"{self.flags_szp('r', 4)} {self.wr(ins, op0, 'r')} }} }}")
-        elif base == "rcr":
+        elif base in ("rcl", "rcr", "rol", "ror"):
             s = op0.size
-            n = op1.imm if op1.type == X.X86_OP_IMM else None
-            if n != 1:
-                self.rec.note("rcr count!=1", ins.address)
-                E(f"{SPILL} rt_unimpl(c, {h(ins.address)}, \"rcr n\");")
+            bits = s * 8
+            # rol/ror rotate mod bits; rcl/rcr rotate through carry mod bits+1, count masked to 31
+            cmask = 31 if base in ("rcl", "rcr") else bits - 1
+            if op1.type == X.X86_OP_IMM:
+                n = op1.imm & cmask
+                if n:
+                    a = self.rd(ins, op0)
+                    pre, body, post = self.rotate_body(base, bits, s)
+                    ofe = (pre + " ") if (n == 1 and pre) else ""
+                    ofp = (" " + post) if (n == 1 and post) else ""
+                    E(f"{{ uint32_t n={h(n)}, a={a}; {ofe}{body}{ofp} {self.wr(ins, op0, 'r')} }}")
+            elif op1.type == X.X86_OP_REG and self.reg(ins, op1.reg) == "cl":
+                a = self.rd(ins, op0)
+                pre, body, post = self.rotate_body(base, bits, s)
+                ofe = f"if (n==1) {{ {pre} }} " if pre else ""
+                ofp = f" if (n==1) {{ {post} }}" if post else ""
+                E(f"{{ uint32_t n=({self.rd_reg('cl')})&{h(cmask)}, a={a}; if (n) {{ {ofe}{body}{ofp} "
+                  f"{self.wr(ins, op0, 'r')} }} }}")
             else:
-                E(f"{{ uint32_t a={self.rd(ins, op0)}; uint32_t r=(a>>1)|(cf<<{s * 8 - 1}); of=((a>>{s * 8 - 1})&1u)^cf; "
-                  f"cf=a&1u; {self.wr(ins, op0, 'r')} }}")
+                self.rec.note(f"{base} count", ins.address)
+                E(f"{SPILL} rt_unimpl(c, {h(ins.address)}, \"{base} n\");")
+        elif base == "clc":
+            E("cf=0;")
+        elif base == "cmc":
+            E("cf^=1u;")
         elif base == "imul":
             self.imul(ins, ops)
         elif base == "mul":
@@ -915,6 +990,8 @@ class Func:
             E("edx=(uint32_t)((int32_t)eax>>31);")
         elif base == "cwde":
             E("eax=(uint32_t)(int32_t)(int16_t)eax;")
+        elif base.startswith("cmov"):
+            E(f"if ({self.cond(CC[base[4:]])}) {{ {self.wr(ins, op0, self.rd(ins, op1))} }}")
         elif base.startswith("set"):
             E(self.wr(ins, op0, f"({self.cond(CC[base[3:]])}?1u:0u)"))
         elif base in ("bt", "bts"):
@@ -925,6 +1002,10 @@ class Func:
             E("c->df=0;")
         elif base == "std":
             E("c->df=1;")
+        elif base == "lodsb":
+            E(f"{{ int32_t st=c->df?-1:1; {self.wr_reg('al', 'R8(esi)')} esi+=st; }}")
+        elif base == "lodsd":
+            E(f"{{ int32_t st=c->df?-4:4; {self.wr_reg('eax', 'R32(esi)')} esi+=st; }}")
         elif base in ("nop", "wait"):
             pass
         elif base in ("int3", "hlt", "ud2"):
@@ -1007,6 +1088,28 @@ class Func:
         w = "" if base == "cmp" else self.wr(ins, op0, "r")
         self.emit(f"{{ uint32_t a={a}, b={b}; {calc} {self.flags_szp('r', s)} fa=a; fb=b; fr=r; {w} }}")
         self.flagsrc = ("cmp", s) if base in ("cmp", "sub") else None
+
+    def rotate_body(self, base, bits, s):
+        """(pre, body, post) for rcl/rcr/rol/ror: locals n, a, cf; body assigns r and cf;
+        pre/post assign OF (pre reads the old cf, post reads the new r)."""
+        m = MASK[s]
+        if base == "rol":
+            return ("", f"uint32_t r=((a<<n)|(a>>({bits}u-n)))&{m}; cf=r&1u;",
+                    f"of=((r>>{h(bits - 1)})&1u)^(r&1u);")
+        if base == "ror":
+            return ("", f"uint32_t r=((a>>n)|(a<<({bits}u-n)))&{m}; cf=(r>>{h(bits - 1)})&1u;",
+                    f"of=((r>>{h(bits - 1)})&1u)^((r>>{h(bits - 2)})&1u);")
+        # rcl/rcr: the ring is CF:operand (bits+1 wide), count masked to 31 then taken mod bits+1
+        w = bits + 1
+        wm = f"0x{(1 << w) - 1:x}u"
+        ring = f"uint64_t t=((uint64_t)cf<<{bits}u)|a, nn=n%{w}u, r6=((t"
+        if base == "rcl":
+            return (f"of=((a>>{h(bits - 1)})&1u)^cf;",
+                    f"{ring}<<nn)|(t>>({w}u-nn)))&{wm}; cf=(uint32_t)((r6>>{bits}u)&1u); "
+                    f"uint32_t r=(uint32_t)(r6&{m});", "")
+        return (f"of=((a>>{h(bits - 1)})&1u)^cf;",
+                f"{ring}>>nn)|(t<<({w}u-nn)))&{wm}; cf=(uint32_t)((r6>>{bits}u)&1u); "
+                f"uint32_t r=(uint32_t)(r6&{m});", "")
 
     def shift(self, ins, base, op0, op1):
         s = op0.size
