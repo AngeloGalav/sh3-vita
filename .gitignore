@@ -1,0 +1,8 @@
+# Never versioned: derived from the game binary or produced by builds
+game/
+port/gen/
+port/gen-sh3/
+re/out/
+build/
+__pycache__/
+*.pyc
