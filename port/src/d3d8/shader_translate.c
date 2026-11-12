@@ -252,6 +252,13 @@ char *ps_translate(const uint32_t *t, int *err) {
         }
         if (op == 64) { sp(&b, "  t%u = clamp(vT%u, 0.0, 1.0);\n", dnum & 3, dnum & 3); i += 2; continue; }
         if (op == 65) { sp(&b, "  if (any(lessThan(vT%u.xyz, vec3(0.0)))) discard;\n", dnum & 3); i += 2; continue; }
+        if (op == 69 || op == 70) { // texreg2ar / texreg2gb tN, tM: the colour of tM is used as coordinates for stage N
+            uint32_t sn = s[0] & 3;
+            if (op == 69) sp(&b, "  t%u = texture2D(s%u, vec2(t%u.a, t%u.r));\n", dnum & 3, dnum & 3, sn, sn);
+            else sp(&b, "  t%u = texture2D(s%u, t%u.gb);\n", dnum & 3, dnum & 3, sn);
+            i += 3;
+            continue;
+        }
         int sat = (dst >> 20) & 1;
         int shift = (int)((dst >> 24) & 0xf);
         sp(&b, "  %s%s = (", dn, dm);

@@ -1,6 +1,8 @@
 // Handles Win32, attentes et chemins.
 #include "win32.h"
 #include <ctype.h>
+#include <sys/stat.h>
+#include <string.h>
 
 #define MAX_H 1024
 static struct { int type; void *obj; } htab[MAX_H];
@@ -73,10 +75,14 @@ uint32_t w32_wait(uint32_t n, const uint32_t *hs, int all, uint32_t timeout_ms) 
         rt_log("w32_wait #%u n=%u all=%d to=%u h0=%x\n", wait_id, n, all, timeout_ms, n > 0 ? hs[0] : 0);
     uint32_t start = SDL_GetTicks();
     SDL_LockMutex(g_sync);
+    unsigned gens[64];
+    for (uint32_t i = 0; i < n && i < 64; i++) { Event *e = h_get(hs[i], H_EVENT); gens[i] = e ? e->gen : 0; }
     for (;;) {
         uint32_t ok = 0, first = 0xffffffffu;
-        for (uint32_t i = 0; i < n; i++)
-            if (w32_signaled(hs[i])) { ok++; if (first == 0xffffffffu) first = i; }
+        for (uint32_t i = 0; i < n; i++) {
+            Event *e = i < 64 ? h_get(hs[i], H_EVENT) : NULL;
+            if (w32_signaled(hs[i]) || (e && e->gen != gens[i])) { ok++; if (first == 0xffffffffu) first = i; }
+        }
         if (all ? ok == n : ok > 0) {
             if (all) for (uint32_t i = 0; i < n; i++) w32_consume(hs[i]);
             else w32_consume(hs[first]);
@@ -91,6 +97,15 @@ uint32_t w32_wait(uint32_t n, const uint32_t *hs, int all, uint32_t timeout_ms) 
     SDL_UnlockMutex(g_sync);
     if (wait_id <= 5 || wait_id % 200 == 0) rt_log("w32_wait #%u -> TIMEOUT\n", wait_id);
     return WAIT_TIMEOUT_;
+}
+
+void w32_event_pulse(uint32_t h) {
+    Event *e = h_get(h, H_EVENT);
+    if (!e) return;
+    SDL_LockMutex(g_sync);
+    e->gen++;
+    SDL_CondBroadcast(g_sync_cv);
+    SDL_UnlockMutex(g_sync);
 }
 
 void w32_set_last_error(CPU *c, uint32_t e) {
@@ -121,14 +136,36 @@ void w32_sleep_until(uint64_t t) {
 }
 uint32_t w32_tick_ms(void) { return vtime() ? (uint32_t)(w32_qpc() * 1000 / SDL_GetPerformanceFrequency()) : SDL_GetTicks(); }
 
-void w32_host_path(const char *g, char *out, size_t n) {
+// Host path of a guest path. Reads: SH3_SAVE_DIR overlay first (files the game wrote), then the game folder.
+// Writes (w32_host_path_w): SH3_SAVE_DIR overlay (parents created) so the game folder can stay read-only.
+static void rel_of(const char *g, char *rel, size_t n) {
     char tmp[512];
     size_t k = 0;
     for (; *g && k < sizeof tmp - 1; g++) tmp[k++] = *g == '\\' ? '/' : *g;
     tmp[k] = 0;
     const char *p = tmp;
-    if (!SDL_strncasecmp(p, "C:/SH4/", 7)) p += 7;
+    if (!SDL_strncasecmp(p, "C:/SH3/", 7)) p += 7;
     while (p[0] == '.' && p[1] == '/') p += 2;
-    if (p[0] && p[1] == ':') { SDL_snprintf(out, n, "%s", p); return; }
-    SDL_snprintf(out, n, "%s/%s", g_game_dir, p);
+    SDL_snprintf(rel, n, "%s", p);
+}
+void w32_host_path(const char *g, char *out, size_t n) {
+    char rel[512];
+    rel_of(g, rel, sizeof rel);
+    if (rel[0] && rel[1] == ':') { SDL_snprintf(out, n, "%s", rel); return; }
+    const char *sd = getenv("SH3_SAVE_DIR");
+    if (sd) {
+        char ov[700]; struct stat st;
+        SDL_snprintf(ov, sizeof ov, "%s/%s", sd, rel);
+        if (!stat(ov, &st)) { SDL_snprintf(out, n, "%s", ov); return; }
+    }
+    SDL_snprintf(out, n, "%s/%s", g_game_dir, rel);
+}
+void w32_host_path_w(const char *g, char *out, size_t n) {
+    char rel[512];
+    rel_of(g, rel, sizeof rel);
+    const char *sd = getenv("SH3_SAVE_DIR");
+    if (!sd || (rel[0] && rel[1] == ':')) { w32_host_path(g, out, n); return; }
+    SDL_snprintf(out, n, "%s/%s", sd, rel);
+    for (char *q = out + strlen(sd) + 1; *q; q++)
+        if (*q == '/') { *q = 0; mkdir(out, 0777); *q = '/'; }
 }

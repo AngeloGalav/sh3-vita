@@ -204,6 +204,15 @@ void rt_call(CPU *c, uint32_t t) {
         dump(c);
         rt_fatal("indirect call to 0x%08x: no known function", t);
     }
+    static int trace = -1;
+    if (trace < 0) trace = getenv("SH3_TRACE") ? atoi(getenv("SH3_TRACE")) : 0;
+    if (trace && t >= G_HOSTFN_BASE && (trace > 1 || c == g_main_cpu)) {
+        uint8_t *mb = g_mem; unsigned i = (t - G_HOSTFN_BASE) / 16u;
+        uint32_t a1 = R32(c->esp + 4), a2 = R32(c->esp + 8), a3 = R32(c->esp + 12), a4 = R32(c->esp + 16);
+        f(c);
+        rt_log("[imp] %s(%x,%x,%x,%x) -> %x\n", hostfn_name[i], a1, a2, a3, a4, c->eax);
+        return;
+    }
 #ifdef SH4_PROFILE
     void *pv = rt_prof_host(t >= G_HOSTFN_BASE ? (void *)f : NULL);   // profile: attributes the time spent in a host function (D3D, Win32...) to that function
     f(c);
@@ -238,8 +247,19 @@ int rt_init_mem(void *mem, uint32_t mem_size) {
 }
 
 int rt_init(uint32_t mem_size) {
+#if !defined(__vita__) && defined(__linux__)
+    // Host (Linux) bring-up: reserve the whole 32-bit guest address space; everything past mem_size is PROT_NONE so a
+    // wild guest access faults at once instead of corrupting the host heap.
+    #include <sys/mman.h>
+    size_t span = (size_t)1 << 32;
+    void *m = mmap(NULL, span + 65536, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+    if (m == MAP_FAILED) return -1;
+    if (mprotect((uint8_t *)m + mem_size, span + 65536 - mem_size, PROT_NONE)) return -1;
+    return rt_init_mem(m, mem_size);
+#else
     void *m = malloc(mem_size);
     return m ? rt_init_mem(m, mem_size) : -1;
+#endif
 }
 
 int rt_load_exe(const char *path) {
@@ -263,79 +283,10 @@ int rt_load_exe(const char *path) {
         memcpy(g_mem + base + va, d + raw, rsz < vsz || !vsz ? rsz : vsz);
     }
     free(d);
-    rt_options_language_default();
     return 0;
 }
 
-// SH4_RES=i: game resolution preset (cf. 0x4148e0: 0=640x480, 1=1024x768 by default, 2=1366x768...).
-// SH4_RES=WxH: free size (e.g. 960x544); the game sets its field of view from the backbuffer size (native 16:9),
-// the menu option stays on the 16:9 preset (2) so that 0x4148e0 does not reapply it.
-// Called at CreateWindowExA: WinMain has just reset 1024x768 (0x414150) and the D3D device does not exist yet.
-static int res_index(void) {
-    const char *e = getenv("SH4_RES");
-    if (!e) return -1;
-    return strchr(e, 'x') ? 2 : atoi(e) % 6;
-}
-void rt_apply_res(void) {
-    HOSTFN;
-    const char *res = getenv("SH4_RES");
-    if (!res) return;
-    static const uint16_t wh[6][2] = {{640, 480}, {1024, 768}, {1366, 768}, {1920, 1080}, {2560, 1440}, {3840, 2160}};
-    unsigned i = (unsigned)res_index(), w = wh[i][0], h = wh[i][1];
-    if (strchr(res, 'x')) sscanf(res, "%ux%u", &w, &h);
-    W32(0x5d524c, w); W32(0x5d5250, h);
-    W32(0x610dd4, i); W32(0x610dd8, i);   // chosen option / applied option
-}
-
-// With SH4_RES, the "Resolution" line of the options menu (byte 0x1091af0 + cancel copy 0x1091b14) shows
-// the resolution actually rendered; the PC option makes no sense on console, it is kept frozen. Called every frame.
-void rt_keep_res(void) {
-    static int r = -2, done;
-    uint8_t *const mb = g_mem;
-    if (r == -2) r = res_index();
-    if (!done) {
-        // "Console" options menu: from the page table (0x654cc0 / 0x654d88 / 0x654e50, 0x1c bytes per row,
-        // row counts at 0x655034 and 0x655040). Handlers, labels and help travel with each row.
-        static const struct { uint32_t tab; uint8_t n, k[8]; } pg[] = {
-            {0x654cc0, 6, {1, 2, 3, 4, 5, 6}},    // without Resolution
-            {0x654d88, 5, {0, 1, 5, 2, 6}},       // buttons, walk/run, inversion, sensitivity, exit
-            {0x654e50, 7, {0, 1, 2, 3, 4, 5, 7}}, // "Others" page without Realtime Shadow
-        };
-        for (unsigned p = 0; p < 3; p++) {
-            uint8_t old[8 * 0x1c];
-            memcpy(old, mb + pg[p].tab, sizeof old);
-            for (unsigned i = 0; i < pg[p].n; i++) memcpy(mb + pg[p].tab + i * 0x1c, old + pg[p].k[i] * 0x1c, 0x1c);
-            W32(0x655034 + 4 * p, pg[p].n); W32(0x655040 + 4 * p, pg[p].n);
-        }
-        extern void rt_controls_patch_labels(void);
-        rt_controls_patch_labels();
-        uint32_t slider = 0x654d88 + 3 * 0x1c;
-        W32(slider + 0xc, 0x654c58); W32(slider + 0x10, 11);
-        W32(slider + 0x14, 0x7000); // custom label; nat_optrow selects the volume gauge renderer
-        done = 1; rt_log("[menu] options console: %u/%u/%u lignes\n", R32(0x655034), R32(0x655038), R32(0x65503c));
-    }
-    {   // TEMP diagnostics: where does the options text live? (SH4_STRSCAN=text)
-        static const char *pat; static unsigned n;
-        if (!pat) pat = getenv("SH4_STRSCAN") ? getenv("SH4_STRSCAN") : "";
-        if (*pat && ++n % 120 == 0 && n < 120 * 40) {
-            size_t pl = strlen(pat); unsigned hits = 0;
-            for (uint32_t a = 0; a + pl < g_mem_size && hits < 6; a++)
-                if (!memcmp(mb + a, pat, pl)) {
-                    rt_log("[strscan] '%s' at %08x (prev bytes %02x %02x %02x %02x, next %02x %02x)\n", pat, a, mb[a-4], mb[a-3], mb[a-2], mb[a-1], mb[a+pl], mb[a+pl+1]);
-                    hits++;
-                    unsigned refs = 0;
-                    for (uint32_t b = 0; b + 4 <= g_mem_size && refs < 4; b += 4) if (R32(b) == a) { rt_log("[strscan]   pointer at %08x\n", b); refs++; }
-                }
-        }
-    }
-    // Hidden controls retain the pad defaults, including when loading an older save.
-    for (unsigned copy = 0; copy < 2; copy++) {
-        uint32_t opt = 0x1091ad0 + copy * 0x24;
-        W8(opt + 8, 2); W8(opt + 0xb, 1); W8(opt + 0x17, 0); // defaults at 0x5c5af4
-    }
-    if (r < 0) return;
-    W8(0x1091af0, r); W8(0x1091b14, r);
-}
+// (SH4 resolution/menu patches removed for SH3: nothing patches the guest here.)
 
 void rt_fill_iat(void) {
     HOSTFN;
@@ -400,8 +351,6 @@ void rt_prof_start(void);
 #define rt_prof_start()
 #endif
 void rt_run_entry(void) {
-    extern void rt_audit_init(void);
-    rt_audit_init();
     CPU *c = g_main_cpu = rt_new_cpu(4u << 20);
     rt_log("entry 0x%08x, stack 0x%08x, TIB 0x%08x\n", x86_entry, c->esp, c->fs_base);
     rt_prof_start();

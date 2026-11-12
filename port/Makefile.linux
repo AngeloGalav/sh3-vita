@@ -1,0 +1,46 @@
+# Native x86_64 Linux build of the recompiled SH3 (J2 bring-up). Run inside the host-dev container:
+#   docker/host-build.sh make -C port -f Makefile.linux -j32
+# Generated code: port/gen-sh3 (recomp/x86rec.py --target sh3). Output: build/j2/sh3.
+.DEFAULT_GOAL := all
+CC      = gcc
+OUT     ?= ../build/j2
+ASAN    ?= 0
+ifeq ($(ASAN),1)
+  OUT = ../build/j2asan
+  SAN = -fsanitize=address -fno-omit-frame-pointer
+endif
+SDLC    = $(shell sdl2-config --cflags)
+SDLL    = $(shell sdl2-config --libs)
+CFLAGS  = $(SAN) -DSH3_PORT -std=gnu11 -O0 -g -Isrc/rt -Isrc -Igen-sh3 -Isrc/d3d8 $(SDLC) \
+          -Wall -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable -Wno-int-conversion \
+          -Wno-unused-function -Wno-pointer-sign -MMD -MP
+GENFLAGS = -O0 -w
+LDFLAGS = $(SAN) $(SDLL) -lGL -lm -lpthread
+
+# SH4-specific gameplay hooks (they wrap SH4 guest addresses): not used for SH3
+SKIP    = src/pc/prof.c src/rt/audio_adpcm_bridge.c src/rt/audio_adpcm.c src/rt/collision.c src/rt/collision_list_bridge.c \
+          src/rt/collision_native.c src/rt/collision_segment.c src/rt/collision_segment_bridge.c src/rt/controls_help.c \
+          src/rt/menu_test.c src/rt/natives.c src/rt/options.c src/rt/raytri.c src/rt/save_error.c src/rt/save_write.c \
+          src/rt/cinematic.c src/rt/model.c src/rt/model_uv.c src/rt/audit.c
+RT_EXTRA = src/host/sh3_stubs.c
+GEN_SRC = $(wildcard gen-sh3/*.c)
+RT_SRC  = $(RT_EXTRA) $(filter-out $(SKIP), $(wildcard src/rt/*.c src/win32/*.c src/d3d8/*.c src/dx/*.c src/pc/*.c)) src/third_party/tlsf/tlsf.c
+OBJ     = $(patsubst %.c,$(OUT)/%.o,$(GEN_SRC) $(RT_SRC))
+-include $(OBJ:.o=.d)
+
+all: $(OUT)/sh3
+
+$(OUT)/sh3: $(OBJ)
+	$(CC) -o $@ $^ $(LDFLAGS)
+
+$(OUT)/gen-sh3/%.o: gen-sh3/%.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 $(GENFLAGS) -Isrc/rt -Isrc -Igen-sh3 -c $< -o $@
+
+$(OUT)/%.o: %.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf $(OUT)
+.PHONY: all clean

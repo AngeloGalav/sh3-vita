@@ -441,11 +441,16 @@ K(WaitForMultipleObjects) {
     STDRET(4, r);
 }
 
+__thread Thread *w32_tl_self;
 static int thread_main(void *p) {
     rt_cpu_profile_thread("guest");
     Thread *t = p;
     HOSTFN;
+    w32_tl_self = t;
     W32(t->c->fs_base + 0x24, t->tid);
+    SDL_LockMutex(g_sync);
+    while (t->susp > 0) SDL_CondWait(g_sync_cv, g_sync);   // CREATE_SUSPENDED: wait for ResumeThread
+    SDL_UnlockMutex(g_sync);
     rt_guest_call(t->c, t->start, 1, t->param);
     SDL_LockMutex(g_sync);
     t->done = 1;
@@ -461,7 +466,7 @@ K(CreateThread) {
     t->start = ARG(3);
     t->param = ARG(4);
     t->tid = next_tid++;
-    if (ARG(5) & 4) rt_log("CreateThread: CREATE_SUSPENDED ignored\n");
+    if (ARG(5) & 4) t->susp = 1;   // CREATE_SUSPENDED
     if (ARG(6)) W32(ARG(6), t->tid);
     uint32_t h = h_new(H_THREAD, t);
     rt_log("CreateThread start=%08x param=%08x tid=%u\n", t->start, t->param, t->tid);
@@ -490,7 +495,7 @@ K(CreateFileA) {
     char hp[600];
     const char *gp = GSTR(ARG(1));
     uint32_t access = ARG(2), disp = ARG(5);
-    w32_host_path(gp, hp, sizeof hp);
+    if (access & 0x40000000u) w32_host_path_w(gp, hp, sizeof hp); else w32_host_path(gp, hp, sizeof hp);
     const char *mode = (access & 0x40000000u) ? (disp == 3 || disp == 4 ? "r+b" : "w+b") : "rb";
     // Reserve metadata before opening a possibly destructive CREATE_ALWAYS
     // handle. Host OOM must neither dereference NULL nor truncate a save/config.
@@ -848,6 +853,7 @@ K(WriteFile) {
     }
     if (outn) W32(outn, put);
     if (ov) { W32(ov, error ? file_status(error) : 0); W32(ov + 4, put); if (R32(ov + 16)) ev_set(R32(ov + 16), 1); }
+    if (getenv("SH3_FILELOG")) rt_log("[file] WriteFile h=%x n=%u put=%u err=%u ov=%x\n", ARG(1), n, put, error, ov);
     if (error) {
         rt_log("[file] WriteFile h=%x requested=%u written=%u error=%u\n", ARG(1), n, put, error);
         w32_set_last_error(c, error);
@@ -881,6 +887,36 @@ K(SetFilePointer) {
     if (ARG(3)) W32(ARG(3), 0);
     STDRET(4, (uint32_t)pos);
 }
+
+// ---------- file mappings (read-only views are copied into guest memory) ----------
+typedef struct { uint32_t hfile; } Mapping;
+K(CreateFileMappingA) {   // (hFile, attrs, protect, sizeHigh, sizeLow, name)
+    HOSTFN;
+    Mapping *m = calloc(1, sizeof *m);
+    m->hfile = ARG(1);
+    w32_set_last_error(c, 0);
+    STDRET(6, h_new(H_MAPPING, m));
+}
+K(MapViewOfFile) {   // (hMap, access, offHigh, offLow, bytes)
+    HOSTFN;
+    Mapping *m = h_get(ARG(1), H_MAPPING);
+    File *f = m ? file_of(m->hfile) : NULL;
+    if (!f) { w32_set_last_error(c, 6); STDRET(5, 0); }
+    long cur = ftell(f->f);
+    fseek(f->f, 0, SEEK_END);
+    long size = ftell(f->f);
+    uint32_t off = ARG(4), want = ARG(5);
+    uint32_t n = want ? want : (uint32_t)(size > (long)off ? size - off : 0);
+    uint32_t g = gheap_alloc(n ? n : 1);
+    if (!g) { fseek(f->f, cur, SEEK_SET); w32_set_last_error(c, 8); STDRET(5, 0); }
+    fseek(f->f, (long)off, SEEK_SET);
+    size_t got = fread(mb + g, 1, n, f->f);
+    if (got < n) memset(mb + g + got, 0, n - got);
+    fseek(f->f, cur, SEEK_SET);
+    rt_log("MapViewOfFile(h=%x off=%u n=%u) -> %08x\n", ARG(1), off, n, g);
+    STDRET(5, g);
+}
+K(UnmapViewOfFile) { HOSTFN; gheap_free(ARG(1)); STDRET(1, 1); }
 K(GetFileSize) {
     HOSTFN;
     File *f = file_of(ARG(1));
@@ -931,7 +967,7 @@ K(CloseHandle) {
 K(CreateDirectoryA) {
     HOSTFN;
     char hp[600];
-    w32_host_path(GSTR(ARG(1)), hp, sizeof hp);
+    w32_host_path_w(GSTR(ARG(1)), hp, sizeof hp);
     int r = MKDIR(hp);
     if (r) w32_set_last_error(c, 183);
     STDRET(2, r == 0);
@@ -940,8 +976,9 @@ K(GetFileAttributesA) {
     HOSTFN;
     char hp[600];
     struct stat st;
+    if (!GSTR(ARG(1))) { w32_set_last_error(c, 2); STDRET(1, 0xffffffffu); }
     w32_host_path(GSTR(ARG(1)), hp, sizeof hp);
-    if (stat(hp, &st)) { w32_set_last_error(c, 2); STDRET(1, 0xffffffffu); }
+    if (stat(hp, &st)) { rt_log("GetFileAttributesA(\"%s\") -> not found (%s)\n", GSTR(ARG(1)) ? GSTR(ARG(1)) : "(null)", hp); w32_set_last_error(c, 2); STDRET(1, 0xffffffffu); }
     STDRET(1, S_ISDIR(st.st_mode) ? 0x10 : 0x80);
 }
 K(SetFileAttributesA) { STDRET(2, 1); }
@@ -980,6 +1017,25 @@ static uint32_t rsrc_find(uint32_t name, uint32_t type, int wide) {
         dir = root + (off & 0x7fffffffu);
     }
     return 0;
+}
+// USER32!LoadStringA(hInst, id, buf, cch): RT_STRING (6) blocks of 16 length-prefixed UTF-16 strings, narrowed to latin-1.
+void imp_USER32_LoadStringA(CPU *c) {
+    HOSTFN;
+    uint32_t id = ARG(2), buf = ARG(3), cch = ARG(4);
+    uint32_t ent = rsrc_find((id >> 4) + 1, 6, 0);
+    uint32_t len = 0;
+    if (ent) {
+        uint32_t p = 0x400000 + R32(ent);
+        for (uint32_t i = 0; i < (id & 15); i++) p += 2 + 2 * R16(p);
+        len = R16(p);
+        if (buf && cch) {
+            if (len >= cch) len = cch - 1;
+            for (uint32_t i = 0; i < len; i++) W8(buf + i, (uint8_t)R16(p + 2 + 2 * i));
+            W8(buf + len, 0);
+        }
+    } else if (buf && cch) W8(buf, 0);
+    rt_log("LoadStringA(%u) -> \"%s\"\n", id, buf ? (const char *)(mb + buf) : "");
+    STDRET(4, len);
 }
 K(FindResourceA) { HOSTFN; STDRET(3, rsrc_find(ARG(2), ARG(3), 0)); }
 K(FindResourceW) { HOSTFN; STDRET(3, rsrc_find(ARG(2), ARG(3), 1)); }

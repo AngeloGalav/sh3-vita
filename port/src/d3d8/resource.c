@@ -266,6 +266,52 @@ const gfn tex_vt[] = {tex_QueryInterface, surf_AddRef, surf_Release, surf_GetDev
                       tex_GetType, tex_SetLOD, tex_GetLOD, tex_GetLevelCount, tex_GetLevelDesc, tex_GetSurfaceLevel,
                       tex_LockRect, tex_UnlockRect, tex_AddDirtyRect};
 
+// ---------- IDirect3DCubeTexture8 (SH3 probes and may fill cube maps; rendering from them is not implemented) ----------
+typedef struct CubeTexture { ComObj com; uint32_t fmt, edge, levels, usage, pool; Texture *face[6]; } CubeTexture;
+M(cube, QueryInterface) { STDRET(3, 0x80004002u); }
+M(cube, GetType) { STDRET(1, 5); }   // D3DRTYPE_CUBETEXTURE
+M(cube, GetLevelCount) { HOSTFN; THIS(CubeTexture, K_CUBE); STDRET(1, self->levels); }
+M(cube, GetLevelDesc) {
+    HOSTFN; THIS(CubeTexture, K_CUBE);
+    uint32_t l = ARG(2);
+    if (l >= self->levels) STDRET(3, D3DERR_INVALIDCALL);
+    uint32_t w = self->edge >> l;
+    write_desc(ARG(3), self->fmt, 1, self->usage, self->pool, w ? w : 1, w ? w : 1);
+    STDRET(3, HR_OK);
+}
+M(cube, GetCubeMapSurface) {
+    HOSTFN; THIS(CubeTexture, K_CUBE);
+    uint32_t f = ARG(2), l = ARG(3);
+    if (f > 5 || l >= self->levels) STDRET(4, D3DERR_INVALIDCALL);
+    addref(self);
+    W32(ARG(4), self->face[f]->lv[l]->com.guest);
+    STDRET(4, HR_OK);
+}
+M(cube, LockRect) {
+    HOSTFN; THIS(CubeTexture, K_CUBE);
+    uint32_t f = ARG(2), l = ARG(3);
+    if (f > 5 || l >= self->levels) STDRET(6, D3DERR_INVALIDCALL);
+    uint32_t w = self->edge >> l;
+    STDRET(6, lock_rect(surf_mem(self->face[f]->lv[l]), self->fmt, w ? w : 1, ARG(4), ARG(5)));
+}
+M(cube, UnlockRect) { STDRET(3, HR_OK); }
+M(cube, AddDirtyRect) { STDRET(3, HR_OK); }
+static const gfn cube_vt[] = {cube_QueryInterface, surf_AddRef, surf_Release, surf_GetDevice, surf_SetPrivateData,
+                              surf_GetPrivateData, surf_FreePrivateData, tex_SetPriority, tex_GetPriority, tex_PreLoad,
+                              cube_GetType, tex_SetLOD, tex_GetLOD, cube_GetLevelCount, cube_GetLevelDesc,
+                              cube_GetCubeMapSurface, cube_LockRect, cube_UnlockRect, cube_AddDirtyRect};
+uint32_t cube_create(uint32_t edge, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool) {
+    if (!edge) return 0;
+    CubeTexture *t = calloc(1, sizeof *t);
+    t->edge = edge; t->usage = usage; t->fmt = fmt; t->pool = pool;
+    for (int f = 0; f < 6; f++) {
+        t->face[f] = tex_create(edge, edge, levels, usage, fmt, pool);
+        if (!t->face[f]) return 0;
+    }
+    t->levels = t->face[0]->levels;
+    return com_wrap(&t->com, K_CUBE, cube_vt, 19, "IDirect3DCubeTexture8");
+}
+
 Texture *tex_create(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool) {
     if (!w || !h) return NULL;
     uint32_t maxl = 1;
@@ -573,6 +619,7 @@ static int model_bounds_cache_enabled(void) {
     return model_bounds_cache_mode;
 }
 
+#ifndef SH3_PORT  /* SH4-only wrappers around original SH4 functions (WRAPS table), unused by the SH3 build */
 extern void F_00415ef0_orig(CPU *c),F_00415ee0_orig(CPU *c);
 void nat_model_buffer_lock(CPU *c) {
     HOSTFN;
@@ -593,6 +640,8 @@ void nat_model_buffer_unlock(CPU *c) {
     F_00415ee0_orig(c);
     if (scope) { model_unlock_scope=NULL;model_unlock_guest=0;model_reader_guest=0; }
 }
+
+#endif
 
 extern int nat_model_bounds(CPU *c),rt_native_model_bounds_enabled(void);
 int d3d_model_bounds(CPU *c) {

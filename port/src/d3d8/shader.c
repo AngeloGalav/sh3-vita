@@ -71,6 +71,7 @@ uint32_t ps_create(uint32_t func) {
     if (i == 256) return 0;
     PShader *p = calloc(1, sizeof *p);
     int err;
+    if (getenv("SH3_TRACE_SHADER")) { const uint32_t *tk = (const uint32_t *)(mb + func); rt_log("[ps] create @%08x tokens:", func); for (int k = 0; k < 24; k++) rt_log(" %08x", tk[k]); rt_log("\n"); }
     p->glsl_body = ps_translate((const uint32_t *)(mb + func), &err);
     if (err) rt_log("[ps] traduction partielle du shader 0x%08x (err %d)\n", func, err);
     p->handle = (uint32_t)i;

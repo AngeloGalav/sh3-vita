@@ -116,7 +116,13 @@ M(CreateTexture) {
     STDRET(8, HR_OK);
 }
 M(CreateVolumeTexture) { HOSTFN; d3d_log_once("CreateVolumeTexture"); W32(ARG(9), 0); STDRET(9, D3DERR_NOTAVAILABLE); }
-M(CreateCubeTexture) { HOSTFN; d3d_log_once("CreateCubeTexture"); W32(ARG(7), 0); STDRET(7, D3DERR_NOTAVAILABLE); }
+extern uint32_t cube_create(uint32_t edge, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool);
+M(CreateCubeTexture) {
+    HOSTFN; d3d_log_once("CreateCubeTexture");
+    uint32_t g = cube_create(ARG(2), ARG(3), ARG(4), ARG(5), ARG(6));
+    W32(ARG(7), g);
+    STDRET(7, g ? HR_OK : D3DERR_INVALIDCALL);
+}
 M(CreateVertexBuffer) {
     HOSTFN;
     Buffer *b = buf_create(ARG(2), ARG(3), ARG(4), ARG(5), 0);

@@ -11,7 +11,7 @@ extern CPU *g_main_cpu;
 // Guest address space layout (outside the image 0x400000..0x13e3000).
 #define G_TIB_MAIN    0x00010000u
 #define G_STACK_MAIN  0x00300000u   // top of the main thread stack (grows downward)
-#define G_HEAP_BASE   0x01400000u
+#define G_HEAP_BASE   0x07200000u   // SH3 image ends at 0x717c0a8 (108 MB of .data BSS)
 #define G_HOSTFN_BASE 0xF0000000u   // synthetic addresses of host functions
 
 int rt_init(uint32_t mem_size);

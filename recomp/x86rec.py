@@ -324,6 +324,12 @@ if TARGET != "sh4":
     # and SH4 natives: they must never apply to another target.
     WRAPS, OVERRIDES = {}, {}
 
+if TARGET == "sh3":
+    # CRT routines whose internal jump tables live in .text (not recognised as switches) are replaced by host natives.
+    OVERRIDES = {
+        0x66f9c0: "nat_crt_memcpy",   # _memcpy/_memmove (cdecl dst, src, n) -> returns dst
+    }
+
 
 def optimize_audio_packets(code):
     """Batch a prefix, leaving the final original iteration to restore its ABI."""

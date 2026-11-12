@@ -40,7 +40,27 @@ void plat_gl_init(void) {
     if (!g_gl) rt_fatal("contexte OpenGL : %s", SDL_GetError());
     SDL_GL_SetSwapInterval(getenv("SH4_NOVSYNC") ? 0 : 1);
 }
-void plat_gl_swap(void) { SDL_GL_SwapWindow(g_win); }
+#include <SDL_opengl.h>
+// SH3_SHOTS="30,120": dump the back buffer (PPM) before presenting the given frames (host bring-up screenshots).
+static void shot_maybe(void) {
+    static unsigned frame; static const char *spec; static int init;
+    if (!init) { init = 1; spec = getenv("SH3_SHOTS"); }
+    frame++;
+    if (!spec) return;
+    char buf[256]; snprintf(buf, sizeof buf, ",%s,", spec);
+    char key[32]; snprintf(key, sizeof key, ",%u,", frame);
+    if (!strstr(buf, key)) return;
+    int w = 0, h = 0; SDL_GL_GetDrawableSize(g_win, &w, &h);
+    if (w <= 0 || h <= 0) return;
+    unsigned char *px = malloc((size_t)w * h * 3);
+    glPixelStorei(GL_PACK_ALIGNMENT, 1);
+    glReadPixels(0, 0, w, h, GL_RGB, GL_UNSIGNED_BYTE, px);
+    char path[300]; snprintf(path, sizeof path, "shot_%u.ppm", frame);
+    FILE *f = fopen(path, "wb");
+    if (f) { fprintf(f, "P6\n%d %d\n255\n", w, h); for (int y = h - 1; y >= 0; y--) fwrite(px + (size_t)y * w * 3, 1, (size_t)w * 3, f); fclose(f); rt_log("[shot] %s %dx%d\n", path, w, h); }
+    free(px);
+}
+void plat_gl_swap(void) { shot_maybe(); SDL_GL_SwapWindow(g_win); }
 void plat_drawable_size(int *w, int *h) { SDL_GL_GetDrawableSize(g_win, w, h); }
 
 void rt_platform_fatal(const char *msg) {
@@ -49,7 +69,7 @@ void rt_platform_fatal(const char *msg) {
 }
 
 int main(int argc, char **argv) {
-    const char *dir = argc > 1 ? argv[1] : getenv("SH4_GAME_DIR") ? getenv("SH4_GAME_DIR") : "D:/Games/Silent Hill 4";
+    const char *dir = argc > 1 ? argv[1] : getenv("SH3_GAME_DIR") ? getenv("SH3_GAME_DIR") : "/game";
     SDL_strlcpy(g_game_dir, dir, sizeof g_game_dir);
     if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_TIMER | SDL_INIT_GAMECONTROLLER | SDL_INIT_EVENTS)) {
         fprintf(stderr, "SDL_Init: %s\n", SDL_GetError());
@@ -71,7 +91,7 @@ int main(int argc, char **argv) {
     if (rt_init(guest_mb << 20)) rt_fatal("guest memory: allocation failed");
     rt_log("[mem] PC guest memory: %u MB\n", guest_mb);
     char exe[600];
-    SDL_snprintf(exe, sizeof exe, "%s/SILENT HILL 4.exe", g_game_dir);
+    SDL_snprintf(exe, sizeof exe, "%s/sh3.exe", g_game_dir);
     int r = rt_load_exe(exe);
     if (r) rt_fatal("cannot load %s (%d)", exe, r);
     rt_fill_iat();

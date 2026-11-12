@@ -58,7 +58,7 @@ void d3d_fill_caps(uint32_t p) {
     W32(p + 36, 0x00f7e1b1u); // RasterCaps : DITHER, ZTEST, FOGVERTEX, FOGTABLE, MIPMAPLODBIAS, ZFOG, WFOG...
     W32(p + 40, 0xff); W32(p + 44, 0x1fff); W32(p + 48, 0x1fff); W32(p + 52, 0xff);
     W32(p + 56, 0x000242a8u); // ShadeCaps
-    W32(p + 60, 0x0000c5c7u); // TextureCaps: PERSPECTIVE, ALPHA, MIPMAP, CUBEMAP, PROJECTED... (not POW2)
+    W32(p + 60, 0x0000cdc7u); // TextureCaps: PERSPECTIVE, ALPHA, MIPMAP, CUBEMAP (0x800: SH3 refuses to start without it), PROJECTED... (not POW2)
     W32(p + 64, 0x07070707u); W32(p + 68, 0x07070707u); W32(p + 72, 0x07070707u);
     W32(p + 76, 0x3f);        // TextureAddressCaps
     W32(p + 80, 0x3f);

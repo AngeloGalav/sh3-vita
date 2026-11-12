@@ -26,7 +26,25 @@ D3D8 / DInput / DirectSound shim and vitaGL rendering.
 
 ## Status
 
-J0 (target tooling): see `docs/PORTAGE-SH3-2026-11-11.md` §9–§11.
-Milestones: J0 tooling → J1 SIMD outside the CRI codec → J2 linked startup;
-J3 (data formats) in parallel. Testing is on PC and the Vita3K+ emulator;
-emulator results are never console validation. A physical Vita may come later.
+- **J0** (target tooling): see `docs/PORTAGE-SH3-2026-11-11.md` §9–§11.
+- **J1** (SIMD outside the CRI codec): done, differential test green.
+- **J2** (linked startup): reached on Linux. The recompiled `sh3.exe` runs in a
+  Docker image (SDL2, Mesa software GL) with the real game data and shows the
+  Konami logo, the content warning and the title menu. The opening movie is
+  skipped (`SH3_NO_MOVIE=1`), audio is untested, and nothing past the menu has
+  been exercised. Build and run: `docker/host-build.sh`, `port/Makefile.linux`.
+- **J3** (data formats): `.arc`, textures, `.map`, `.ded`, `.cld`, audio
+  documented in `docs/DATA-FORMATS-SH3.md`; `.mdl`/`.anm`, camera semantics and
+  the movie cipher are still open.
+
+Testing is on PC and the Vita3K+ emulator; emulator results are never console
+validation. No physical Vita or console validation has happened yet.
+
+## How this was made
+
+This is an experimental project, built on top of the SH4 Vita port
+(`sh3-vita`'s SH4 code: recompiler approach, Win32/D3D8 shim, runtime).
+Most of the work was done with **Qwen Flash Next**, a local model. The results
+were then validated with **Claude Sonnet**; validation with **Claude Opus** is
+planned for later. Treat every claim in the docs as "checked on PC/emulator
+only" unless stated otherwise.
