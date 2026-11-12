@@ -13,7 +13,13 @@ Règles héritées du dépôt SH4 (`../sh3-vita/AGENTS.md`), adaptées à SH3.
 - Distinguer source, candidat compilé, version installée, paquet des testeurs
   et publication. Ne pas annoncer de gain ou de validation sans preuve.
 - Ne pas versionner `game/`, `port/gen*/`, `re/out/` ni les preuves sous `build/`.
-- Commits uniquement sous `vallfrr <valentin.fortier51110@gmail.com>`, auteur
-  et committer, sans co-auteur ajouté. Pas de sous-agents, d'automatisme
-  récurrent ni de publication sans accord de Valentin.
+- Commits (updated 2026-11-12, by Angelo Galavotti): author and committer are
+  `Angelo Galavotti <agalavottib@gmail.com>`. Every commit message has a
+  description written in Heather Mason's voice (Silent Hill 3), keeping all
+  technical facts intact, and ends with `Co-Authored-By` trailers for Heather
+  (`Heather Mason <heather@silent-hill.invalid>`) and for the model that did the
+  work: Qwen Flash Next (`<noreply@qwen.ai>`) for local-model work, Claude
+  Sonnet 5.5 (`<noreply@anthropic.com>`) for Sonnet work, and the matching
+  Claude tag for Opus later. Older commits by `vallfrr` keep their author.
+  No subagents, recurring automation or publishing without Angelo's agreement.
 - Réponses en anglais avec Valentin (instruction du 2026-11-11).
