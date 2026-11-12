@@ -366,3 +366,6 @@ This replaces the earlier "container not uniform / entry table not mapped" notes
 - **Proof:** with this walk all 232 non-empty `.kg2` files (48 are zero bytes) parse exactly to their last byte, 9,095 objects in total. The 4 `.lv` files (cu1e, mrdf, mu12, mu22) use the same container.
 - **Still open:** exact item order/count per group type (type = low16 of the u32 at +4: 6, 5, 7, 11, 15, 9 ... most common) and the runtime meaning of the objects (0x78-byte entries, up to 4 per channel; consumers 0x4877d0, 0x489850, and 0x4d1067 for `.lv`). The geometry looks like shadow/light-volume meshes ("kage"), not render geometry.
 
+### `.mdl` outer structure correction (2026-11-12)
+A character `.mdl` (e.g. chhaa.mdl, 5.25 MB) is the model block (size = the u32 at +0x0c, 0xc1b50 for chhaa) followed by a normal `ffffffff` texture container at that offset (4 subs for chhaa: 512x512, 512x512, 512x1024 ...). So only ~790 KB is geometry/skeleton; the rest is textures readable with `j3_arc.walk_subs`/`decode_container`. The `.mdl` field-level decode and `.anm` remain open; the working brief is `docs/BRIEF-MDL-ANM.md`.
+
