@@ -42,8 +42,9 @@ validation. No physical Vita or console validation has happened yet.
 
 ## How this was made
 
-This is an experimental project, built on top of the SH4 Vita port
-(`sh3-vita`'s SH4 code: recompiler approach, Win32/D3D8 shim, runtime).
+This is an experimental project, built on top of the
+[Silent Hill 4 Vita port (sh4vita)](https://github.com/vallfrr/sh4vita) by
+vallfrr: recompiler approach, Win32/D3D8 shim, runtime.
 Most of the work was done with **Qwen Flash Next**, a local model. The results
 were then validated with **Claude Sonnet**; validation with **Claude Opus** is
 planned for later. Treat every claim in the docs as "checked on PC/emulator
