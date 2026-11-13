@@ -709,7 +709,9 @@ static GLenum cmp_of(uint32_t f) {
     return f < 9 ? t[f] : GL_ALWAYS;
 }
 static GLenum sop_of(uint32_t o) {
-    static const GLenum t[] = {GL_KEEP, GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR, GL_DECR, GL_INVERT, GL_INCR, GL_DECR};
+    // D3DSTENCILOP: 1 KEEP 2 ZERO 3 REPLACE 4 INCRSAT 5 DECRSAT 6 INVERT 7 INCR (wraps) 8 DECR (wraps).
+    // 7/8 used to map to the saturating GL_INCR/GL_DECR, which breaks stencil-counted light/shadow volumes.
+    static const GLenum t[] = {GL_KEEP, GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR, GL_DECR, GL_INVERT, GL_INCR_WRAP, GL_DECR_WRAP};
     return o < 9 ? t[o] : GL_KEEP;
 }
 static void apply_states(Device *d) {

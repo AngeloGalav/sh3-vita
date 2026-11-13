@@ -56,7 +56,24 @@ M(ShowCursor) {
 M(CreateAdditionalSwapChain) { d3d_log_once("CreateAdditionalSwapChain"); STDRET(3, D3DERR_INVALIDCALL); }
 // ponytail: the backbuffer size does not change; SH4_RES re-imposes the resolution that the game option (0x524320) just overwrote.
 M(Reset) { HOSTFN; DEV; rt_log("[d3d8] Reset %ux%u\n", R32(ARG(2)), R32(ARG(2) + 4)); rt_apply_res(); prep_gfx_init(); STDRET(2, HR_OK); }
-M(Present) {
+// Cross-build memory diagnostic (host vs Vita): SH3_MEMCRC="present:addr:len,..." (hex addr/len, decimal present index)
+// logs a CRC32 of that guest range when the Nth Present is reached, so the same buffer can be compared between builds.
+static void memcrc_maybe(void) {
+    static const char *spec; static int init; static unsigned n;
+    if (!init) { init = 1; spec = getenv("SH3_MEMCRC"); }
+    n++;
+    if (!spec) return;
+    for (const char *p = spec; p && *p; p = strchr(p, ','), p = p ? p + 1 : NULL) {
+        unsigned at; uint32_t a, len;
+        if (sscanf(p, "%u:%x:%x", &at, &a, &len) != 3 || at != n) continue;
+        if ((uint64_t)a + len > g_mem_size) { rt_log("[memcrc] present=%u %08x+%x out of range\n", n, a, len); continue; }
+        uint32_t crc = 0xffffffffu;
+        for (uint32_t i = 0; i < len; i++) { crc ^= g_mem[a + i]; for (int k = 0; k < 8; k++) crc = crc >> 1 ^ (0xedb88320u & (0u - (crc & 1))); }
+        rt_log("[memcrc] present=%u addr=%08x len=%x crc=%08x first=%02x%02x%02x%02x\n", n, a, len, ~crc,
+               g_mem[a], g_mem[a + 1], g_mem[a + 2], g_mem[a + 3]);
+    }
+}
+M(Present) { memcrc_maybe();
     HOSTFN; DEV;
     if (g_t_begin) g_t_body += SDL_GetPerformanceCounter() - g_t_begin;
     g_t_begin = 0;
@@ -324,10 +341,11 @@ M(SetTexture) {
     uint32_t s = ARG(2);
     if (s >= MAX_STAGES) STDRET(3, HR_OK);
     Texture *t = ARG(3) ? com_get_kind(ARG(3), K_TEXTURE) : NULL;
-    // Cube maps (SH3 spotlight cones) are rendered only with SH3_CUBE=1: enabling them exposes the light-volume draws,
-    // which come out as solid yellow volumes on the Linux host (2026-11-13, build/j2c/cube1): stencil/blend path not right yet.
+    // Cube maps: SH3 projects its local spotlights (flashlight-style cones) through two 128x128 cube textures. Without
+    // them the warm light on walls/characters is missing (compared with sh3-nx, 2026-11-13). SH3_CUBE=0 disables them
+    // (diagnostic / fallback: the stage is then bound as NULL, the pre-2026-11-13 behaviour).
     static int cube_on = -1;
-    if (cube_on < 0) cube_on = getenv("SH3_CUBE") && !strcmp(getenv("SH3_CUBE"), "1");
+    if (cube_on < 0) cube_on = !(getenv("SH3_CUBE") && !strcmp(getenv("SH3_CUBE"), "0"));
     ComObj *cu = cube_on && ARG(3) && !t ? com_get_kind(ARG(3), K_CUBE) : NULL;
     if (ARG(3) && !t && !cu) d3d_log_once("SetTexture: cube (SH3_CUBE=0) or volume texture bound as NULL");
     Texture *o = d->tex[s];

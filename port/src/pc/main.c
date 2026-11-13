@@ -36,6 +36,8 @@ void plat_gl_init(void) {
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
+    SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);     // D3D auto depth/stencil is D24S8 (SDL default has no stencil)
+    SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
     g_gl = SDL_GL_CreateContext(g_win);
     if (!g_gl) rt_fatal("contexte OpenGL : %s", SDL_GetError());
     SDL_GL_SetSwapInterval(getenv("SH4_NOVSYNC") ? 0 : 1);
@@ -63,8 +65,10 @@ static void shot_maybe(void) {
         float v[8]; memcpy(v, g_mem + 0xba99c4, sizeof v);
         rt_log("[shot-cam] frame=%u eye=%g,%g,%g target=%g,%g,%g\n", frame, v[0], v[1], v[2], v[4], v[5], v[6]);
     }
-    { extern uint64_t g_heap_used, g_heap_peak;   // guest TLSF heap (base 0x07200000): sizes the Vita guest block
-      rt_log("[shot-heap] frame=%u used=%llu KB peak=%llu KB\n", frame, (unsigned long long)(g_heap_used >> 10), (unsigned long long)(g_heap_peak >> 10)); }
+    { extern uint64_t g_heap_used, g_heap_peak, g_mem_tex, g_mem_vb, g_mem_ds;   // guest TLSF heap (base 0x07200000): sizes the Vita guest block
+      rt_log("[shot-heap] frame=%u used=%llu KB peak=%llu KB (texture copies %llu KB, vertex/index buffers %llu KB, audio %llu KB)\n", frame,
+             (unsigned long long)(g_heap_used >> 10), (unsigned long long)(g_heap_peak >> 10), (unsigned long long)(g_mem_tex >> 10),
+             (unsigned long long)(g_mem_vb >> 10), (unsigned long long)(g_mem_ds >> 10)); }
     if (g_dev) {   // D3D state at the shot: fixed-function view/proj and VS constants c0..c7 (row-major as set by the game)
         const float *m[2] = {g_dev->view, g_dev->proj}; static const char *nm[2] = {"view", "proj"};
         for (int k = 0; k < 2; k++)
