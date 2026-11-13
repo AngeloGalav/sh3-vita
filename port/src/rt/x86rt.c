@@ -91,6 +91,11 @@ void rt_log(const char *fmt, ...) {
     free(big);
 #ifndef __vita__
     rt_log_flush();
+#else
+    // SH3_LOGSYNC=1: write every line at once instead of every 100 ms, so a hard crash (no FATAL) keeps its last lines. Slower.
+    static int logsync = -1;
+    if (logsync < 0) { const char *e = getenv("SH3_LOGSYNC"); logsync = e && *e == '1'; }
+    if (logsync) rt_log_flush();
 #endif
 }
 

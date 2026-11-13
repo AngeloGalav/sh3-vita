@@ -11,6 +11,8 @@
 #   tools/vita.sh put <file> [path] upload a file (default ux0:/data/sh3/, e.g. an env.txt)
 #   tools/vita.sh ls [path]         list a folder (default ux0:/data/sh3/)
 #   tools/vita.sh get <path> [dir]  download one file, e.g. ux0:/data/psp2core-x.psp2dmp
+#   tools/vita.sh diag on|off       upload tools/env-diag.txt as ux0:/data/sh3/env.txt (crash-proof log,
+#                                   stats every 2 s, big VRAM drops per draw; slower), or delete env.txt
 #   tools/vita.sh rmdisp            delete ux0:/data/sh3/disp.ini (the game's "crashed last time" marker)
 #   tools/vita.sh run | stop        start or close the game (vitacompanion only)
 #
@@ -26,9 +28,9 @@ BUILD=${VITA_BUILD:-$ROOT/build/vita-sh3-clean}
 IP_FILE=$ROOT/build/console/vita_ip
 PORT=${VITA_FTP_PORT:-1337}
 
-usage() { sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 case "$1" in
-ip|install|vpk|put|pull|ls|get|rmdisp|run|stop) ;;
+ip|install|vpk|put|pull|ls|get|diag|rmdisp|run|stop) ;;
 *) usage ;;
 esac
 
@@ -127,6 +129,17 @@ get)
 	mkdir -p "$OUT"
 	ftp -f "$URL/$2" -o "$OUT/$(basename "$2")"
 	echo "got $OUT/$(basename "$2")"
+	;;
+diag)
+	need_ftp
+	case "$2" in
+	on)
+		ftp -T "$ROOT/tools/env-diag.txt" "$URL/$DATA/env.txt"
+		echo "env.txt on the console is now:"; ftp "$URL/$DATA/env.txt" | sed 's/^/  /' ;;
+	off)
+		curl -sS --connect-timeout 5 --ftp-method nocwd "$URL/" -Q "DELE $DATA/env.txt" -o /dev/null && echo "removed $DATA/env.txt" || echo "no env.txt to remove" ;;
+	*) echo "usage: $0 diag on|off" >&2; exit 2 ;;
+	esac
 	;;
 rmdisp)
 	need_ftp
