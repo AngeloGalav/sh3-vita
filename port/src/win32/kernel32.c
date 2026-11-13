@@ -487,6 +487,7 @@ typedef struct {
     struct { long key, pos; uint32_t n; } nx[8]; unsigned nxi;
     long lastpos; uint32_t lastn;
 } File;
+void movie_note_file(const char *host);
 static uint32_t s_pf_mem;
 static uint32_t file_error(int error, uint32_t fallback);
 static uint32_t file_status(uint32_t error);
@@ -514,6 +515,7 @@ K(CreateFileA) {
     fl->f = f;
     fl->ro = !(access & 0x40000000u);
     snprintf(fl->path, sizeof fl->path, "%s", hp);
+    { const char *e0 = strrchr(hp, '.'); if (e0 && fl->ro && !SDL_strcasecmp(e0, ".000")) movie_note_file(hp); }   // SH3 movie: the game's own source filter opens it, the host decoder re-reads it
     // Only immutable game archives may retain a completed stream block.
     // Saves, configuration and writable handles keep the existing policy.
     const char *reuse=getenv("SH4_PREFETCH_REUSE"),*ext=strrchr(hp,'.');

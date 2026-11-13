@@ -52,6 +52,7 @@ struct Movie {
     char path[600];
     uint32_t graph_g, ctl_g, pos_g, ev_g, aud_g, sink_g;
     HObj *graph, *filters[5], *pins[10];
+    uint32_t guest[4]; int nguest;
     uint32_t renderer, rpin, mem_in, alloc;      // guest objects (alloc: host allocator)
     Samp *samp[NSAMP];
     uint32_t buf_size;
@@ -638,6 +639,49 @@ static plm_buffer_t *movie_file(const char *host) {
     setvbuf(f, NULL, _IONBF, 0);
     return plm_buffer_create_with_file(f, 1);
 }
+// SH3 .000: MPEG-PS obfuscated by an LCG keystream (see codec/movie000.h); plaintext starts at file offset 0x8000.
+#include "codec/movie000.c"
+static char g_movie_note[600];                    // last .000 file the game opened (its own source filter reads it)
+void movie_note_file(const char *host) { snprintf(g_movie_note, sizeof g_movie_note, "%s", host); }
+typedef struct { FILE *f; size_t size, pos; uint32_t base; uint8_t chunk[MOVIE000_PERIOD]; long chunk_idx; } MovieDec;
+static void movie_dec_load(plm_buffer_t *buffer, void *user) {
+    MovieDec *d = user;
+    if (buffer->discard_read_bytes) plm_buffer_discard_read_bytes(buffer);
+    while (buffer->length < buffer->capacity && d->pos < d->size) {
+        long idx = (long)(d->pos / MOVIE000_PERIOD);
+        size_t off = d->pos % MOVIE000_PERIOD, want = MOVIE000_PERIOD;
+        if (idx != d->chunk_idx) {
+            size_t n = 0;
+            if (!fseek(d->f, (long)(MOVIE000_HEADER_SIZE + (size_t)idx * MOVIE000_PERIOD), SEEK_SET))
+                n = fread(d->chunk, 1, want, d->f);
+            if (n < want) memset(d->chunk + n, 0, want - n);
+            if (n >= 4) movie000_decrypt(d->chunk, n & ~(size_t)3, d->base);
+            d->chunk_idx = idx;
+        }
+        size_t take = MOVIE000_PERIOD - off;
+        if (take > buffer->capacity - buffer->length) take = buffer->capacity - buffer->length;
+        if (take > d->size - d->pos) take = d->size - d->pos;
+        memcpy(buffer->bytes + buffer->length, d->chunk + off, take);
+        buffer->length += take; d->pos += take;
+    }
+    if (d->pos >= d->size) buffer->has_ended = TRUE;
+}
+static void movie_dec_seek(plm_buffer_t *buffer, size_t pos, void *user) { (void)buffer; ((MovieDec *)user)->pos = pos; }
+static size_t movie_dec_tell(plm_buffer_t *buffer, void *user) { (void)buffer; return ((MovieDec *)user)->pos; }
+static plm_buffer_t *movie_dec_file(const char *host) {
+    FILE *f = fopen(host, "rb");
+    if (!f) return NULL;
+    uint8_t *hdr = malloc(MOVIE000_HEADER_SIZE);
+    MovieDec *d = calloc(1, sizeof *d);
+    if (!hdr || !d || fseek(f, 0, SEEK_END) || ftell(f) <= MOVIE000_HEADER_SIZE || fseek(f, 0, SEEK_SET) ||
+        fread(hdr, 1, MOVIE000_HEADER_SIZE, f) != MOVIE000_HEADER_SIZE) { free(hdr); free(d); fclose(f); return NULL; }
+    d->f = f; d->chunk_idx = -1;
+    d->base = movie000_base_state(hdr);
+    free(hdr);
+    fseek(f, 0, SEEK_END);
+    d->size = (size_t)ftell(f) - MOVIE000_HEADER_SIZE;
+    return plm_buffer_create_with_callbacks(movie_dec_load, movie_dec_seek, movie_dec_tell, d->size, d);   // leaks FILE/MovieDec per movie (small)
+}
 static void movie_cached_load(plm_buffer_t *buffer, void *user) {
     if (buffer->discard_read_bytes) plm_buffer_discard_read_bytes(buffer);
     size_t n = movie_stream_read(user, buffer->bytes + buffer->length, buffer->capacity - buffer->length);
@@ -651,6 +695,7 @@ static size_t movie_cached_tell(plm_buffer_t *buffer, void *user) {
     (void)buffer; return ((MovieCursor *)user)->pos;
 }
 static plm_buffer_t *movie_input(Movie *m, const char *host, int index) {
+    { const char *e = strrchr(host, '.'); if (e && !strcasecmp(e, ".000")) return movie_dec_file(host); }
     if (!m->stream) return movie_file(host);
     m->cursor[index].source = m->stream; m->cursor[index].pos = 0;
     return plm_buffer_create_with_callbacks(movie_cached_load, movie_cached_seek,
@@ -890,8 +935,12 @@ M(ev, GetEvent) {
 }
 M(ev, WaitComp) { HOSTFN; W32(ARG(3), 0); STDRET(3, VFW_E_TIMEOUT); }
 M(ev, Free) { STDRET(4, HR_OK); }
+// IMediaEventEx tail (SH3 queries 56a868c0 and calls SetNotifyWindow): SetNotifyWindow(this,hwnd,msg,data),
+// SetNotifyFlags(this,flags), GetNotifyFlags(this,&flags)
+M(ev, SetNotifyWindow) { HOSTFN; rt_log("[movie-gr] SetNotifyWindow(hwnd=%08x msg=%08x data=%08x)\n", ARG(2), ARG(3), ARG(4)); STDRET(4, HR_OK); }
+M(ev, GetNotifyFlags) { HOSTFN; if (ARG(2)) W32(ARG(2), 0); STDRET(2, HR_OK); }
 static const gfn ev_vt[] = {any_QI, any_AddRef, any_Release, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Disp, ev_GetHandle,
-    ev_GetEvent, ev_WaitComp, pos_Gen2, pos_Gen2, ev_Free};
+    ev_GetEvent, ev_WaitComp, pos_Gen2, pos_Gen2, ev_Free, ev_SetNotifyWindow, pos_Gen2 /*SetNotifyFlags*/, ev_GetNotifyFlags};
 
 M(au, PutVol) {
     HOSTFN; MV;
@@ -924,24 +973,42 @@ M(gr, QI) {
     W32(out, r);
     STDRET(3, r ? HR_OK : E_NOINTERFACE_);
 }
+// ---- guest filter / pin discovery (the game builds its own source and renderer filters) ----
+// First pin of a guest IBaseFilter with the wanted direction (0 input, 1 output); 0 if none.
+static uint32_t guest_find_pin(CPU *c, uint32_t filt, int want_dir) {
+    HOSTFN;
+    uint32_t tmp = guest_tmp() + 224, found = 0;
+    W32(tmp, 0);
+    if ((int32_t)gcall(c, filt, 10, 1, tmp) < 0 || !R32(tmp)) return 0;   // IBaseFilter::EnumPins
+    uint32_t en = R32(tmp);
+    for (int i = 0; i < 8 && !found; i++) {
+        W32(tmp + 4, 0); W32(tmp + 8, 0);
+        gcall(c, en, 3, 3, 1u, tmp + 4, tmp + 8);                            // IEnumPins::Next(1, &pin, &fetched)
+        uint32_t pin = R32(tmp + 4);
+        if (!pin || R32(tmp + 8) != 1) break;
+        W32(tmp + 12, 99);
+        gcall(c, pin, 9, 1, tmp + 12);                                       // IPin::QueryDirection
+        rt_log("[movie-gr]   filter %08x pin %08x dir=%u\n", filt, pin, R32(tmp + 12));
+        if ((int)R32(tmp + 12) == want_dir) found = pin;
+    }
+    gcall(c, en, 2, 0);                                                      // Release
+    return found;
+}
 M(gr, AddFilter) {
     HOSTFN; MV;
     uint32_t f = ARG(2);
+    rt_log("[movie-gr] AddFilter(%08x host=%d name=%08x)\n", f, com_get(f) != NULL, ARG(3));
     if (!f) STDRET(3, HR_OK);
-    if (!com_get(f)) { // guest filter (the renderer): it joins the graph
-        m->renderer = f;
+    if (!com_get(f)) { // guest filter (renderer or SH3's own source filter): it joins the graph
+        if (m->nguest < 4) m->guest[m->nguest++] = f;
         gcall(c, f, 13, 2, m->graph_g, ARG(3));
         rt_log("[movie] guest filter %08x added to the graph\n", f);
     }
     STDRET(3, HR_OK);
 }
-M(gr, Connect) {
-    HOSTFN; MV;
-    uint32_t out = ARG(2), in = ARG(3);
-    HObj *po = (HObj *)com_get(out), *pi = (HObj *)com_get(in);
-    if (po && pi) { po->peer = in; pi->peer = out; STDRET(3, HR_OK); }
-    if (!po || pi) STDRET(3, 0x80040217u);
-    // host output pin (video codec) -> guest input pin (renderer)
+// host output pin (video codec) -> guest input pin (renderer): format negotiation, allocator, delivery setup
+static uint32_t connect_host_guest(CPU *c, Movie *m, HObj *po, uint32_t out, uint32_t in) {
+    HOSTFN;
     uint32_t tmp = guest_tmp();
     uint8_t g_vid[8] = {0x80, 0x00, 0x00, 0xAA, 0x00, 0x38, 0x9B, 0x71}, g_rgb[8] = {0x9F, 0x53, 0x00, 0x20, 0xAF, 0x0B, 0xA7, 0x70}, /* RGB32 */
             g_vi[8] = {0xBF, 0x01, 0x00, 0xAA, 0x00, 0x55, 0x59, 0x5A};
@@ -958,7 +1025,7 @@ M(gr, Connect) {
     W16(fmt + 60, 1); W16(fmt + 62, 32); W32(fmt + 68, w * h * 4);
     uint32_t hr = gcall(c, in, 4, 2, out, mt); // IPin::ReceiveConnection
     rt_log("[movie] ReceiveConnection -> %08x\n", hr);
-    if ((int32_t)hr < 0) STDRET(3, hr);
+    if ((int32_t)hr < 0) return hr;
     m->rpin = in;
     uint32_t pm = tmp + 160;
     W32(pm, 0);
@@ -966,12 +1033,12 @@ M(gr, Connect) {
     put_guid(c, tmp + 176, 0x56a8689d, 0x0ad4, 0x11ce, g_mi);
     hr = gcall(c, in, 0, 2, tmp + 176, pm);   // QueryInterface(IID_IMemInputPin)
     m->mem_in = R32(pm);
-    if ((int32_t)hr < 0 || !m->mem_in) STDRET(3, hr ? hr : E_NOINTERFACE_);
+    if ((int32_t)hr < 0 || !m->mem_in) return hr ? hr : E_NOINTERFACE_;
     W32(pm, 0);
     hr = gcall(c, m->mem_in, 3, 1, pm);       // GetAllocator (CoCreateInstance(CLSID_MemoryAllocator) -> host)
     m->alloc = R32(pm);
     rt_log("[movie] GetAllocator -> %08x (%08x)\n", hr, m->alloc);
-    if ((int32_t)hr < 0 || !m->alloc) STDRET(3, hr ? hr : HR_FAIL);
+    if ((int32_t)hr < 0 || !m->alloc) return hr ? hr : HR_FAIL;
     uint32_t req = tmp + 192;
     W32(req, 2); W32(req + 4, w * h * 4); W32(req + 8, 1); W32(req + 12, 0);
     hr = gcall(c, m->alloc, 3, 2, req, req + 16);  // SetProperties
@@ -979,30 +1046,55 @@ M(gr, Connect) {
     hr = gcall(c, m->mem_in, 4, 2, m->alloc, 0u);  // NotifyAllocator
     rt_log("[movie] NotifyAllocator -> %08x\n", hr);
     po->peer = in;
-    STDRET(3, hr);
+    return hr;
 }
-M(gr, AddSourceFilter) {
+M(gr, Connect) {
     HOSTFN; MV;
-    char path[600], host[700];
-    uint32_t w = ARG(2);
-    size_t i = 0;
-    for (; i < sizeof path - 1 && R16(w + 2 * i); i++) path[i] = (char)R16(w + 2 * i);
-    path[i] = 0;
-    w32_host_path(path, host, sizeof host);
+    uint32_t out = ARG(2), in = ARG(3);
+    rt_log("[movie-gr] Connect(out=%08x in=%08x)\n", out, in);
+    HObj *po = (HObj *)com_get(out), *pi = (HObj *)com_get(in);
+    if (po && pi) { po->peer = in; pi->peer = out; STDRET(3, HR_OK); }
+    if (!po || pi) STDRET(3, 0x80040217u);
+    STDRET(3, connect_host_guest(c, m, po, out, in));
+}
+static uint32_t movie_open_source(Movie *m, const char *host);
+// IGraphBuilder::Render(pin): SH3 hands over its own source filter's output pin and expects the graph to
+// build the rest. The host decodes the file itself (pl_mpeg + demangler), so the guest source filter is not run.
+M(gr, Render) {
+    HOSTFN; MV;
+    uint32_t pin = ARG(2);
+    rt_log("[movie-gr] Render(pin=%08x) file=\"%s\"\n", pin, g_movie_note);
+    uint32_t rin = 0;
+    for (int i = 0; i < m->nguest && !rin; i++) {
+        uint32_t p = guest_find_pin(c, m->guest[i], 0);
+        if (p) { rin = p; m->renderer = m->guest[i]; }
+    }
+    if (!rin) { rt_log("[movie] Render: no guest renderer input pin\n"); STDRET(2, 0x80040217u); }
+    uint32_t hr = movie_open_source(m, g_movie_note);
+    if ((int32_t)hr < 0) STDRET(2, hr);
+    HObj *vo = NULL;
+    for (int k = 0; k < 10; k++)
+        if (m->pins[k] && m->pins[k]->role == F_VCODEC && m->pins[k]->dir == 1) vo = m->pins[k];
+    if (!vo) STDRET(2, HR_FAIL);
+    hr = connect_host_guest(c, m, vo, vo->com.guest, rin);
+    rt_log("[movie] Render -> %08x (renderer %08x pin %08x)\n", hr, m->renderer, rin);
+    STDRET(2, hr);
+}
+static uint32_t movie_open_source(Movie *m, const char *host) {
     const char *cache = getenv("SH4_MOVIE_CACHE"), *all = getenv("SH4_MOVIE_ALL_FRAMES");
     int use_cache = cache && !strcmp(cache, "1");
+    const char *ext = strrchr(host, '.');
+    if (ext && !strcasecmp(ext, ".000")) use_cache = 0;   // the stream cache reads raw bytes; .000 needs the demangler
 #ifdef __vita__
-    if (!cache) use_cache = 1;
+    if (!cache && !(ext && !strcasecmp(ext, ".000"))) use_cache = 1;
 #endif
     if (use_cache) m->stream = movie_stream_open(host);
-    // Allocation failure retains the old streaming/catch-up path. An explicit
-    // flag can still force either policy for paired laboratory comparisons.
     g_movie_all_frames = all ? !strcmp(all, "1") : m->stream != NULL;
     rt_log("[movie-mode] shared_cache=%d all_frames=%d\n", m->stream != NULL, g_movie_all_frames);
     plm_buffer_t *fb = movie_input(m, host, 0);
     m->plm = fb ? plm_create_with_buffer(fb, TRUE) : NULL;
     rt_log("[movie] source \"%s\" -> %s\n", host, m->plm ? "ok" : "FAILED");
-    if (!m->plm) { W32(ARG(4), 0); STDRET(4, VFW_E_NOT_FOUND); }
+    if (!m->plm) return VFW_E_NOT_FOUND;
     plm_set_loop(m->plm, 0);
     plm_set_audio_enabled(m->plm, 0);
     plm_set_video_decode_callback(m->plm, on_video, m);
@@ -1017,16 +1109,37 @@ M(gr, AddSourceFilter) {
     g_movie_w = m->w; g_movie_h = m->h;
     rt_log("[movie] %dx%d, %.2f i/s, %.1f s, audio=%d\n", m->w, m->h, plm_get_framerate(m->plm), plm_get_duration(m->plm),
            plm_get_num_audio_streams(m->plm));
+    return HR_OK;
+}
+M(gr, AddSourceFilter) {
+    HOSTFN; MV;
+    char path[600], host[700];
+    uint32_t w = ARG(2);
+    size_t i = 0;
+    for (; i < sizeof path - 1 && R16(w + 2 * i); i++) path[i] = (char)R16(w + 2 * i);
+    path[i] = 0;
+    w32_host_path(path, host, sizeof host);
+    uint32_t hr = movie_open_source(m, host);
+    if ((int32_t)hr < 0) { W32(ARG(4), 0); STDRET(4, hr); }
     W32(ARG(4), m->filters[F_SRC]->com.guest);
     STDRET(4, HR_OK);
 }
-M(gr, Ok2) { STDRET(2, HR_OK); }
-M(gr, Ok3) { STDRET(3, HR_OK); }
-M(gr, NI3) { STDRET(3, E_NOTIMPL_); }
-static const gfn gr_vt[] = {gr_QI, any_AddRef, any_Release, gr_AddFilter, gr_Ok2 /*RemoveFilter*/, gr_NI3 /*EnumFilters*/,
-    gr_NI3 /*FindFilterByName*/, gr_Ok3 /*ConnectDirect*/, gr_Ok2 /*Reconnect*/, gr_Ok2 /*Disconnect*/,
-    gr_Ok2 /*SetDefaultSyncSource*/, gr_Connect, gr_Ok3 /*Render*/, gr_NI3 /*RenderFile*/, gr_AddSourceFilter,
-    gr_Ok2 /*SetLogFile*/, gr_Ok2 /*Abort*/, gr_Ok2 /*ShouldOperationContinue*/};
+#define GRSTUB(nm, n, hr) M(gr, nm) { HOSTFN; rt_log("[movie-gr] " #nm "(%08x,%08x,%08x)\n", ARG(2), ARG(3), ARG(4)); STDRET(n, hr); }
+GRSTUB(RemoveFilter, 2, HR_OK)
+GRSTUB(EnumFilters, 2, E_NOTIMPL_)
+GRSTUB(FindFilterByName, 3, E_NOTIMPL_)
+GRSTUB(ConnectDirect, 4, HR_OK)
+GRSTUB(Reconnect, 2, HR_OK)
+GRSTUB(Disconnect, 2, HR_OK)
+GRSTUB(SetDefaultSyncSource, 1, HR_OK)
+GRSTUB(RenderFile, 3, E_NOTIMPL_)
+GRSTUB(SetLogFile, 2, HR_OK)
+GRSTUB(Abort, 1, HR_OK)
+GRSTUB(ShouldOperationContinue, 1, HR_OK)
+static const gfn gr_vt[] = {gr_QI, any_AddRef, any_Release, gr_AddFilter, gr_RemoveFilter, gr_EnumFilters,
+    gr_FindFilterByName, gr_ConnectDirect, gr_Reconnect, gr_Disconnect,
+    gr_SetDefaultSyncSource, gr_Connect, gr_Render, gr_RenderFile, gr_AddSourceFilter,
+    gr_SetLogFile, gr_Abort, gr_ShouldOperationContinue};
 
 // ---------- entry points for CoCreateInstance ----------
 static Movie *movie_new(void) {
@@ -1036,7 +1149,7 @@ static Movie *movie_new(void) {
     m->graph_g = mkobj(m, MK_GRAPH, gr_vt, 18, "IGraphBuilder", &m->graph);
     m->ctl_g = mkobj(m, MK_CTL, ctl_vt, 16, "IMediaControl", NULL);
     m->pos_g = mkobj(m, MK_POS, pos_vt, 18, "IMediaPosition", NULL);
-    m->ev_g = mkobj(m, MK_EV, ev_vt, 13, "IMediaEvent", NULL);
+    m->ev_g = mkobj(m, MK_EV, ev_vt, 16, "IMediaEventEx", NULL);
     m->aud_g = mkobj(m, MK_AUD, au_vt, 11, "IBasicAudio", NULL);
     m->sink_g = mkobj(m, MK_SINK, sink_vt, 4, "IMediaEventSink", NULL);
     const char *none[2] = {0, 0}, *vs[2] = {"Audio", "Video"}, *one[2] = {"Output", 0};
