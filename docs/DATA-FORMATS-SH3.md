@@ -135,14 +135,19 @@ pixels: stored in GS PSMT8 order (32-bit page layout); linear index = unswizzle8
 Superseded leads: direct `pal[index]` rejected (17% coverage); SH2's dense
 256-entry scheme (`sh2conv/pics.py:load_pc_paletted`) does not apply.
 
-Exe hunt status (open): marker `0x99990909` absent from the whole exe image in
-both byte orders (never compared); no xref or stored pointer to the pic path
-table at `.data 0x6d0cbc` (the only `?? 0c 6d 00` hit, 0x625eb7, is a data
-table); `0x1030` immediates in `.text` are struct field offsets in the tile
-compositor cluster (FUN_00635c45 etc.), not the palette size. Remaining
-anchors: suffix table VA 0x6910a0 (FUN_0049bee0 manifest builder); `.arc`
-magic immediate 0x608e61 (FUN_00608e10 ← FUN_006097f0 ← 0x6068f0); texture
-cluster 0x631xxx–0x63axx (DXT dispatch FUN_00639d33, region ctor FUN_00636081).
+Exe decoder LOCATED (2026-11-13, confirms the data-derived mapping): the CLUT
+expander `0x4921b0` loops over the 256 pixel-index slots; for slot `i` it reads
+`t = table[i]` from the swizzle table at `.data 0x6bd840` (a 256-byte PS2 CLUT
+bits-3/4 swap: `[0..7,16..23,8..15,24..31,…]`, identical to the tool's inline
+`t = (i & 0xE7) | ((i & 8) << 1) | ((i & 0x10) >> 1)`), then indexes the palette
+as `pal[(t>>4)*64 + (t&0xf)]` and expands the RGBX entry (alpha via
+`min(255, 2*a)`, matching the PS2 0..0x80 alpha note). The tool's extra `+11` is
+the raw-file-block per-row padding (defined colors sit at row offsets 11..26 in
+the 1024-entry block); the exe runs on a loader-relaid-out palette whose row base
+already skips it, so both hit the same colors. Companion pixel-format converters:
+`0x492220` X8R8G8B8→R5G5B5A1, `0x492280` X8R8G8B8→R4G4B4A4. The earlier "marker
+`0x99990909` absent / no xref to the path table" leads are moot — the converter is
+reached through the texture-format dispatch, not a string/marker xref.
 
 ## `.map` — room file (STRUCTURE SOLVED 2026-11-11)
 
@@ -183,57 +188,116 @@ see "Texture page rule" below): `+0x18` = 0x50, `+0x1C` = offset of list L1,
 Tool: `j3_arc.py map <data> <archive> --path data/tmp/<room>.map -o OUT` prints
 the section tree and writes the inner pages as PNGs.
 
-### Texture page rule (exe-derived 2026-11-11, visually confirmed on am11)
+### Texture page rule (RECONCILED 2026-11-13: page is STORED verbatim, no parser)
 
-The wrapper `k` (type `0x1000k`) is **not** a page index. The exe draws each
-TOP-LEVEL section with one texture (`SetTexture(0, ...)` once per section in
-FUN 0x4590e0 / 0x459150 / 0x4591c0, then FUN 0x458c30 draws the whole section);
-all wrappers and leaves under it share that texture. The leaf `mat` (grid cell)
-only feeds vertex-shader constants; `k` and the type-0/4 intermediate type only
-select a PS2 packet record and a render-mode table (0x6b4670), never a page.
+Two earlier write-ups (the 2026-11-11 static "dw5" rule and the 2026-11-13 runtime
+trace) describe the **same records**; this is the single reconciled rule. The
+`.map` is loaded **verbatim** (cache read-by-type `0x49c660`→`0x600020`; live bytes
+== file bytes, proven on tpe2) and the BG-init consumer `0x44f790` walks it in
+place — there is **no file→slot transform parser**.
 
-| list (header) | count word | top type | texture |
-|---|---|---|---|
-| L1 `+0x1C` | `+0x42` | 1 | `<fam>GB.tex` sub index = section `dw5` (u32 at section+0x14, signed; -1 = last sub, i.e. `count + dw5`) |
-| L3 `+0x20` | `+0x46` | 2 | `<room>TR.tex` page i (i = index in list; list has 0 or 1 entries) |
-| L2 `+0x24` | `+0x44` | 3 | inner container page i (i = index in list) |
+The consumer walks three **channel lists** at `base+[base+0x1c]` (count u16
+`base+0x42`), `base+[base+0x20]` (count `base+0x46`), `base+[base+0x24]` (count
+`base+0x44`). Records are **0x30 B**, interleaved with their vertex payload,
+chained by **`+0x08` (size)** — next sibling = `rec + [rec+0x08]`; `[rec+0x00]==0`
+terminates. **Group**: `+0x04` child (rel → first leaf), `+0x10` type, `+0x14` s32
+**texid**, `+0x18` u16 leaf count. **Leaf**: `+0x10` s16 **pageidx**, `+0x16` u16
+flag (clamped 0..3); leaves chain by `+0x08` (size) like all records.
 
-Facts backing this (all 287 maps): L2 count == inner sub count in every room;
-L1 `dw5` is always < GB sub count (families with 7 GB subs use -1 and 0..5, `cc`
-has 4 subs and uses 0..2, `hp` has 2 and uses -1/0); L3 count is 0 or 1. Exe
-side: GB set = global `tex(G)` (0x867d00, loader callback 0x5e8f70), TR set =
-`tex(T)` (0x867530, callback 0x5e8fb0); index setup FUN 0x44f1b0 (reads
-`[section+0x14]`, negative => `0x45be20() + dw5`). Type-3 `dw5` is a running
-number (e.g. 2..8) and is NOT used on the PC path; page = list index.
-Rendering am11 with this rule gives a coherent room (wood floor, tiled
-bathroom; bcf1 ducts/beams continuous); the old "k -> GB page" guess does not. TR coverage: L3=1 with own `<room>TR.tex` 66 rooms, L3=0 199 rooms, L3=1 without own TR 22 rooms — all in family `cc`, whose archive has one TR file (`cc01TR.tex`), so those rooms share it (global `tex(T)` set; exe load order not traced). Visually confirmed on am11 and bcf1 (multi-section, dw5 0,1,2,3,5).
-The earlier dark-purple `cc` GB
-pages were the fmt 0x10 green-channel bug (fixed, see fmt 0x10), not the rule.
-Reference renderer: `sh3-vita/build/map-scratch/render_exe_rule.py <room> exe`.
+**THE RULE:** a leaf samples **page `leaf.pageidx` inside the texture object
+`group.texid`**, both read verbatim. Runtime resolution: `texobj = 0x45bff0(texid)`
+(global tex table `0x867d44+texid*0x10`), `page = 0x45b200(texobj, pageidx, 1)` =
+`texobj+0x88+pageidx*0x30` (page descriptor tag `0x7000+pageidx`). Handlers that
+resolve each batch's page: `0x44f1b0` (type 1, global-tex), `0x44f4f0` (type 3,
+room-tex), `0x44ed70` (type 2, color). `0x458010`/`0x457f30` only size/pack
+vertices (section-tree leaf `+0x10`=nverts, `*0x24` B) and never touch texid/pageidx.
 
-Open: UV space check on 512x1024 GB subs (cc idx 3 is never referenced);
-lighting (vertex color may carry it); fmt 0x04 (see below, parked); the 0x49xxxx cluster is a file registry; the geometry draw/texture path is
-located (see Texture page rule), the file loader itself is not.
+**Reconciliation of the 2026-11-11 "dw5" table.** The section `dw5` (u32 at
+section+0x14) **is** the group `texid` at `+0x14` — same field. The old table's
+"type 1→GB / type 2→TR / type 3→inner" was a **per-room heuristic**, not a
+structural law: `texid` is a per-room handle into the global tex table, so which
+`.tex` file it points at (GB atlas / room TR / inner container) depends on what
+that room loaded; the `type` field selects the **render channel/handler** (blend
+mode), not the texture file. Counterexample that forced this: cc09's type-2 group
+carries texid 0 (the GB object) pages 1,2,3 — a second GB render pass, and cc09
+has **no** TR. The earlier observation "type-1 `dw5` < GB sub count" still holds
+because type-1 texids index the GB pages. The wrapper `k` (type `0x1000k`) remains
+a label, never a page index. Exe facts retained: `SetTexture(0,...)` once per
+top-level section (`0x4590e0`/`0x459150`/`0x4591c0` → `0x458c30`); GB set =
+`tex(G)` `0x867d00` (loader `0x5e8f70`), TR set = `tex(T)` `0x867530` (`0x5e8fb0`).
+
+**UV space check (2026-11-13, closes the open question).** Over 861k cc-family
+section-tree vertices, UVs lie in [0,1) except 90 values (0.01%, edge/wrap
+artifacts): **no UV tiling**. The 512×1024 GB sub is **one page** sampled whole
+(the "two 512² tiles" look is content, not two pages), and `pageidx 3` (that
+512×1024 page in `ccGB.tex`) **is** referenced (60× across cc L1 groups) — the
+earlier "cc idx 3 never referenced" note is refuted. Page-list order: inner / TR /
+GB are separate texture objects; `texid` picks the object, `pageidx` the page
+within it (container sub order, tag `0x7000+idx`); there is no single mixed list.
+
+Open (page rule): lighting (vertex color may carry it); fmt 0x04 (see below,
+parked). The geometry draw/texture path and the file loader are both located now.
 
 ### Leaf outliers EXPLAINED (2026-11-11)
 
 Re-walk of all 287 maps through the three header lists: 33,739 leaves, 478 do not satisfy `size == 0x40 + n*0x24`. They are all in rooms `cuf3`, `mu12`, `mu22`, `mu2d`, `mu2f`, `mu32`, `muee`, `muf1` (plus a few more mu*). 464 sit under a type-**10** intermediate, 4 under type 9 (cuf3), 10 under type 0 (mu2d, muee). Each still starts with `n` normal 0x24-byte vertices; after them comes an auxiliary block: leaf header `dw8` (type 0/9 leaves) or `dw9` (type 10 leaves) = `16*(n+4)` bytes of per-vertex auxiliary data, and the total extra after the vertices is `4*n` (+0..28 alignment padding) bytes for type 10 (words like `0x80131414`, `0x80139314`: packed per-vertex values, probably a second colour/light term) or larger blocks for type 0/9. The auxiliary data is not geometry: a renderer can read `n` vertices from the leaf and ignore the rest.
 Script: `sh3-vita/build/map-scratch/outl.py`.
 
-### fmt 0x04 (parked)
-Only `pic/test.tex`, `pic/mp/mpmchurch1_10_tr.tex`, `mpmchurch2_10_tr.tex` (512x1024). Not DXT1 and not linear: PS2-style 4bpp indexed pixels (262144 bytes at sub+0x30) with a 16-entry RGBA palette (alpha 0x80 = opaque) located in the bytes after the pixels (first entries `00000080 09090980 1b191980 ...`). The pixel order is PS2 GS-swizzled (PSMT4): nibble-linear decode shows the tile/text structure but scrambled. These look like unused PS2 leftovers; unswizzle not implemented.
+### fmt 0x04 — 4bpp indexed (runtime path SOLVED 2026-11-13; file-side pixel swizzle OPEN)
+
+Only `pic/mp/mpmchurch1_10_tr.tex` and `mpmchurch2_10_tr.tex` (both 512x1024).
+The earlier claim that `pic/test.tex` was fmt 0x04 was WRONG — its sub header at
+file+0x60 reads fmt 0x08 (512x512); the `09 09 99 99` marker sits at sub+0x1c.
+The old palette claim (`00000080 09090980 …` after the pixels) does not exist in
+any file — superseded by the block layout below.
+
+Container (validated on mpmchurch1_10_tr, 266480 B):
+- sub1 @96: `+0x08` u16 w (LE), `+0x0a` u16 h, `+0x0c` fmt, `+0x0d` pixoff (0x30),
+  `+0x10` u32 pixel size (w*h/2 = 262144), `+0x14` u32 next-sub stride (0x40060),
+  `+0x1c` marker (`09 0a 99 99`). Pixels at sub+0x30.
+- sub2 @ sub1+stride (262336): the **0x1030-byte CLUT block**, same format as
+  fmt 0x08: u32 0x1000 marker at +0, then 1024 RGBX u32 entries at +4. Defined
+  colors sit at row offsets 11..18 of rows 0 and 1 (dwords 11..18 and 75..82) —
+  8 colors per row, 16 total. Entry = (R,G,B,X) with **alpha = min(255, 2*X)**
+  (PS2 0..0x80 alpha). Row 0 = nibble indices 0..7, row 1 = 8..15.
+
+Runtime decode (exe `0x493160`, the fmt-4 path; calls the CLUT expander
+`0x4921b0` with count 0x10):
+- CLUT: `lut16[i] = expand(pal_runtime[swiz(i)])` where `swiz(i)` uses the same
+  0x6bd840 bit-3/4-swap table as fmt 0x08; for 16 entries this maps i=0..7 →
+  runtime dwords 0..7 and i=8..15 → 64..71, i.e. exactly the file's rows 0/1
+  offsets 11..18 after the loader relays the block (skips the +11 row pad).
+- Pixels: each source byte expands to two 32-bit pixels, **low nibble first**
+  (`0x493160` builds a 256-entry byte→2×u32 LUT from lut16 and walks the source
+  linearly row by row). So the buffer the decoder sees is LINEAR — any GS
+  swizzle is undone earlier in the loader (same situation as fmt 0x08, whose
+  pixel unswizzle was also never located in the exe).
+
+OPEN (file-side pixel order): none of linear, textbook PSMT4 (64x16 blocks, all
+intra/block variants that fill 512 B), transposed-linear, or the `unswizzle8`
+dword permutation adapted to 4bpp produce a coherent image (2D luminance
+continuity stays ~11-13 in every variant; only a non-filling transposed variant
+scores 5.7 vertically but 14+ horizontally). The two files look like unused PS2
+leftovers. Next concrete step if ever needed: runtime-oracle capture — break at
+`0x493160` in sh3-nx, dump src+dst, diff against the file bytes to derive the
+loader's permutation directly.
 
 ### `.cam` / `.cld` / `.ded` / `.kg2` survey (sizes only, 2026-11-11)
 - `.cam` (285 files, 512-3328 B): size is a multiple of 128 in all files => fixed 0x80-byte records; each starts with 3 float pairs + 3 float pairs (XZ points of a trigger/camera area), then 50.0, -1600.0 and small ints; semantics not decoded.
 - `.cld` (288 files): SOLVED, see "`.cld` collision" below.
 - `.ded` (285 files): SOLVED, see "`.ded` - per-room light list" above.
-- `.kg2` (280 files, 0-123616 B): loader 0x5e8d20 stores the pointer per channel at [0x7f4c40+4*ch] (flag [0x7f4c08]); the only consumer (0x4877d0, called from 0x489800) registers up to 4 objects with 0x78-byte entries. Content looks like compact geometry: 16-bit fixed-point positions and +-1.0 normals as s16 (0x7fff/0x8000) with small vertex counts (6, 8 ...), i.e. shadow/prop meshes ("kage"), NOT lights. Not decoded.
+- `.kg2` (280 files, 0-123616 B): loader 0x5e8d20 stores the pointer per channel at [0x7f4c40+4*ch] (flag [0x7f4c08]); the only consumer (0x4877d0, called from 0x489800) registers up to 4 objects with 0x78-byte entries. Content looks like compact geometry: 16-bit fixed-point positions and +-1.0 normals as s16 (0x7fff/0x8000) with small vertex counts (6, 8 ...), i.e. shadow/prop meshes ("kage"), NOT lights. Not decoded. *(Superseded 2026-11-13: container solved via `0x4ccd90`; runtime use = per-frame light/effect display queue — see "`.kg2` / `.lv` container SOLVED" below.)*
 - `.lv` (4 files): loader 0x5e8d90, pointer at [0x7f4c7c+4*ch] read only by 0x4d1067; starts with a 4x4 matrix and small index/vertex data; not decoded.
 - Counts over all arcs: tex 383, mes 368, cld 288, map 287, cam 285, ded 285, kg2 280, mdl 157, anm 92, sdb 81, kg1 69, tbn2 34, pic 32 (+hd/bd/td 32 each).
 
-### `.mes` message files (partly decoded 2026-11-11, tool `tools/j3_mes.py`)
+### `.mes` message files (runtime path SOLVED 2026-11-13, exe `0x496780`/`0x5fa400`/`0x5f9da0`/`0x5ff8a0`; earlier tool `tools/j3_mes.py`)
 
-`msg.arc`: 368 files = 46 areas x 8 languages (`_eng_ _jpn_ _frn_ _grm_ _itl_ _spn_ _krn_ _chn_ _msg.mes`). Layout: a u16-LE table T0 (n = T0[0]/2 monotonic offsets, T0[0] = its byte size) pointing at group records of u16-LE text pointers into the text area. English text is readable: `0x00` = space, `0x07` = apostrophe, `0x0e` = line break, `0x29` = `I`, `0x80` = sentence-start prefix (the next letter is stored 0x20 low: `<80>,OOKING` = "LOOKING"), `0x90`/`0x10`/`0x0c`/`0xff xx` = style, page and argument escapes (`0xff 0x03` before item names), strings contain no lowercase. The exact escape grammar and the Japanese/Korean/Chinese encodings are not decoded; the group record structure (which pointer belongs to which message id) is only inferred.
+`msg.arc`: 368 files = 46 areas x 8 languages (`<area>_<lang>_msg.mes`). Loader `FUN_00496780` formats `data/msg/%s_%s_msg.mes` from an area-name table (`PTR_DAT_006bdbf0`) and a language-name table (`PTR_PTR_006bdcac`), loads into one of two buffers (`0xb577f0` normal, `0xb61800` for areas 2/3/4) and selects the font set via `0x5fd9d0`: lang 6→0, 7→2, else→1, matching `fontdata_c.bin` / `fontdata_j.bin` / `fontdata_k.bin` (strings at `0x6995d8..`).
+
+- **Container (getter `FUN_005fa400(buf,id)`):** `buf` is u16-LE; `buf[0]` = message count n; `buf[1..n]` = message offsets **in u16-word units** from the buffer start; message address = `buf + 2*buf[id+1]`. (The old "T0[0] = byte size / group records of pointers" reading was wrong — `T0[0]` is the message count, e.g. 0xd7 = 215 messages in amusement_east.)
+- **Text stream grammar (measurer `FUN_005f9da0`):** a byte-oriented code stream. Item prefix rule: byte `< 0xe0` = 1-byte code; byte `== 0xe0` + u16-LE = 3-byte extended code; byte `> 0xe0` = 2-byte **big-endian** u16 (`0xff 0xff` = 0xffff = end of message). Codes: `0x00` = space (space width); `0x01..0xdf` = glyph index into the per-language font width table (`[fontobj+0x10+code]`, `DAT_070a22c8[lang]`); `0xfd xx` = kern +xx; `0xfc xx` = kern −xx; `0x8000` = style/shift marker; `0xfffd` = line break (pushes the accumulated line width to the output array); `0xfffe` = full-width space; `0xffe0+n` (n=0..9) = **argument slot**: splice in the pre-compiled message at `DAT_070c9cbe + n*0x80` (slots filled by `0x5fc230` from `0x5ff8a0`-compiled strings — item names etc.). Verified decode of amusement_east (215 messages): capitals appear both as ASCII slots (`0x41..`) and stored 0x20 low (`0x21..0x3f` → `+0x20`, e.g. `0x29`='I', `0x34`='T'); `0x80` = sentence-start marker; `0x07` = apostrophe glyph; `0x0e` = line-end glyph; `0xff03`/`0xff00` = item-name open/close (the old "0xff 0x03 before item names"). Sample: `␣{80})T{07}S␣LOCKED{0e}` = "IT'S LOCKED".
+- **Runtime string compiler `FUN_005ff8a0`** (for `sprintf`'d strings/args, not `.mes` bytes): ASCII → glyph code `c − 0x20`; specials: `0x0a`/`\n` = newline (−3), `0x20` = space (−2), `0x1b` ESC sequences (`k`/`w#`/`a#` = wait-key/wait-time/align codes 0x1000/0x2000+n/0x3000+n), backslash escapes `\n \+ \- \l \c \a \x# \y# \h \z \<digits> \s \d \b \v# \_ \p+k/w/a \e(=ESC) \!(=h) \\(='<') \|`, CJK: lead byte ≥ 0x80 pairs with the next byte → `0x5ff6f0(lead*0x100 + lo)` glyph lookup (the JPN/KOR/CHN path, font per `fontdata_{j,k,c}.bin`). Output: 128-short glyph-code array per message slot, −1 = end (+0x8000 trailer word).
+- **Still open:** the exact font-table base reconciliation between the `.mes` byte codes (used directly as width-table indices) and the `−0x20` convention of `0x5ff8a0`; the `0x8000`/`0xe0`-extended code semantics (style vs CJK) need a CJK-file trace; `0x07`/`0x0e` are plain glyph slots in this model (apostrophe/line-break glyph positions in the atlas), not escapes.
 
 ### Lighting model (exe-derived 2026-11-11; light DATA source not located)
 
@@ -268,7 +332,70 @@ Resource-type descriptor table at VA 0x71ec00-0x71f400 (0x38-byte entries; `[+0x
 
 ### `.cam` (partly): the camera fix-up 0x5a1350 walks 0x80-byte records starting at structure+0x40 (stride 0x80, loop continues while bit 0 of the byte at record+0x84 is clear) and patches sentinel floats (10001.0 = 0x461c4000, 10002.0 = 0x461c4400, 10003.0 = 0x461c4800) into defaults (-300, -375, -600 ...), so the files hold per-record camera parameters with "use default" sentinels. Field semantics not decoded.
 
-### `.mdl` / `.anm` (open): `data/pcchr/<group>/<name>.mdl` (157 files, chr*.arc) is NOT the `.map` section tree. Header: `u32 0 | u32 id (e.g. 0x1027) | u32 part count (1-3) | u32 size | u32 size | u32 0x50 | 0 | 1 ...`, a part table at 0x40 (offset/size pairs), then at 0x50 a different small header (`ffff0003 3 0x80 1 0xc0 ...`) followed by what looks like 16-bit fixed-point vertex data (6 x s16 per vertex, e.g. `fec1 fff2 05b9 ffd0 0239 0ec5`) like `.kg2`; skinned draws use the VS with weights `v1`, bone indices `v2`, normals `v3`, uv `v4` (VS at 0x6b57b8, bone matrices from c48 with index*4). The model loader and animation (`.anm`, 92 files, e.g. `data/chr/en/*.anm`) were not analysed; model paths are in static tables starting at VA 0x6954d5 (`data/pcchr/pl/rchfuda.mdl` ...).
+### `.mdl` (decoded 2026-11-12, J3 item b, tool `tools/j3_mdl.py`, verified on all 157 files)
+
+`data/pcchr/<group>/<name>.mdl` (157 files, chr*.arc) is NOT the `.map` section tree. Outer header: `u32 0 | u32 id | u32 nparts | u32 size | u32 size | u32 dataoff | 0 | 1`; part table at 0x40 = nparts offsets (all == dataoff) then nparts sizes (all == size); `dataoff = round_up(0x40+8*nparts, 0x10)`. **`size` is the absolute file offset where the model block ends: the `ffffffff` texture container (j3_arc) starts exactly there, or the file ends there — verified on all 157 files.** Model block length = size - dataoff.
+
+Model block = `ffff0003 | 3` + a fixed 0x80-byte directory (offsets self-relative to the block base; verified on all 157 files):
+
+| slot | count | offset | content |
+|---|---|---|---|
+| A | +0x0c nA | +0x08 offA (always 0x80) | nA x 0x40 bind-pose bone matrices, row-major 4x4, last row = translation + 1.0 (verified rchhaa/bg_bld) |
+| B | +0x14 nB | +0x10 offB | nB bone-parent bytes (0xff = root, else parent index) |
+| C | +0x1c cEnd | +0x18 offC | sorted pairs of bone-index bytes, region [offC, cEnd) |
+| M | (nB) | [cEnd, offF) | nB x 0x40 float4x4 matrices (second matrix set; size relation verified on all 157 files; semantics inferred) |
+| D | +0x20 nD | +0x24 offD | nD per-part (mesh) descriptor records, variable size; first u32 = total D-region size (verified bg_bld); region [offD, offE) also holds per-mesh float vertex/index bulk data (float4 positions with w=1.0 observed; semantics inferred) |
+| E | +0x28 nE | +0x2c offE | nE x 0x40 records; region [offE, block end) |
+| F | +0x30 nF | +0x34 offF | nF u32, region [offF, offG) |
+| G | +0x38 nG | +0x3c offG | nG x 8-byte records, region [offG, next) |
+| H | — | +0x44 offH | pointer into A/M region (0 in 115/157 files) |
+| I | +0x4c nI | +0x48 offI | vertex stream, 12-byte records = 6 x s16 (pos.x,pos.y,pos.z, nx,ny,nz), normals scale 4096 (verified: all rchhaa normals |n| in [4094.4, 4096.0]). nI = number of J stream descriptors. NOTE: for character models this stream is a shared template shell (815 verts in chhaa AND rchhaa, 823 in chcaa), not the body mesh |
+| J | — | +0x50 offJ | nI x (u32 count, u32 offset) stream descriptors; streams live in [offJ+8*nI, offK), each count x 14 bytes (7 x s16; stride 14 verified via stream-size arithmetic on bg_bld + rchhaa). **MORPH TARGET DELTAS — SOLVED 2026-11-13 via runtime oracle** (consumer `FUN_00463bd0`, caught by hardware read-watchpoint in sh3-nx): stream k = morph target k with a per-frame float weight `w = weightarr[k]` (weightarr = `[charobj+0xc]`, float[nI]; zero-weight streams are skipped). Record `(f0..f6)`: `f6` = vertex index into the I stream (sorted, unique per stream); the consumer does `pos[f6] += (f0,f1,f2)·w/16` and `normal[f6] -= (f3,f4,f5)·w/4096` on a global float stride-6 accumulator `DAT_00886e28..e3c` (pos.xyz+normal.xyz per vertex). The runtime J buffer is a copy of the file stream with f3..f5 NEGATED (observed live: file (-739,-504,362) → runtime (739,504,-362)), so net vs file data: `normal[f6] += (f3,f4,f5)·w/4096`. Per-frame chain `0x685e90→0x454670→0x45f5d0→0x464350→0x463bd0`; live chhaa weights e.g. {0:0.004,1:0.274,4:0.274,6:0.054,8:0.063,9:0.230,13:0.510,17:0.347,21:0.347} |
+| K | — | +0x58 offK | zeros in the two test files; +0x5c duplicates offK (all 157); region [offK, offD) |
+| L | — | +0x60 offL | always offK + 0x10 (all 157) |
+| — | +0x64 flags | — | values 1 (94 files), 0x40000001 (33), 0x40000005 (29), 5 (1) |
+| — | +0x74 | — | 0 in 148/157, 1 in 9 |
+
+Slots +0x40, +0x54, +0x68..0x70, +0x78, +0x7c are 0 in all 157 files. Every byte of every model block is assigned to one of these regions (asserted by `j3_mdl.py --survey` on all 157 files). Directory shapes (nonzero-slot pattern + flags): 6 distinct — 94 x (no H, flags 1), 28 x (H, 0x40000005), 19 x (no H, 0x40000001), 14 x (H, 0x40000001), 1 x (no H, 0x40000005), 1 x (no H, 5).
+
+Runtime: the movie constructor 0x683240 computes `filebase + [filebase+0x14]` (dataoff) and reads directory slots at runtime (directory itself is used in place). One transform IS applied to the J region when staged (f3..f5 negated — observed live 2026-11-13; the staging site is not yet located). Skinned VS 0x6b57b8 (vs.1.1 ASCII text in .text): `v0` pos, `v1` = 3 blend weights (4th implicit = `c0.x − Σv1.xyz`), `v2.zyxw` = 4 bone indices (scaled by `c0.w`), `v3` normal (renormalized), bone matrices at `c[48+idx]`, final `m4x4` by `c2`. The earlier "stride 0xE at skin-draw site 0x63be0d" was a misread — that push is a `SetTextureStageState(stage, D3DTSS_TEXCOORDINDEX=0xe, 3)` value, not a stream stride. Embedded textures decode with `j3_arc.decode_container(b[size:])` (verified: rchhaa -> 4 textures incl. a 512x1024 atlas with hair/face/teeth/skirt/watch).
+
+### `.anm` character animation (decoded 2026-11-12, J3 item b, 92 files)
+
+Container (verified exactly on 90/92 files): `[u32 id][nframes x stride]`, i.e. **`size = 4 + nframes * stride(char_id)`**. `id` (file +0) equals the paired `.mdl` id (chrpl/chrch 0x100..0x104, chren 0x200..0x215, chrbg/chrit 0x101c..0x104f). The two exceptions (`test_en_shb.anm` remainder 480 < 558, `test_bg_sya.anm` remainder 52 < 146) are `test/`-directory re-encodes of `en_shb`/`bg_sya` (differ from the shipping files in every frame, different frame-0 control word — not byte copies, not truncated): a DP walk of the record grammar (type 7 = skip, raw/half translation both allowed) shows each remainder is a COMPLETE frame record ending exactly at EOF (65–72 and 25–32 bones). So frames occupy `stride` bytes each only as the seek increment; the final frame may be stored at its natural compressed length without trailing padding. The dword at +4 is NOT a header: it is frame 0's first control word (0x999999aa player, 0xaaaaaaaa en_*, 0x22222222 bg_sya, 0x0a it_dagger). Autocorrelation on en_smb.anm peaks at lag 240 from file offset 0, confirming the grid starts at +4. `.anm` paths: `data/chr/<group>/<name>.anm`.
+
+`stride` is a hardcoded per-character constant, exe function 0x473c10 keyed by the char id word `[char+0x80]` (verified: table + jump tables 0x473d74/0x473d88/0x473ddc + byte table 0x473e04):
+
+| id | stride | id | stride | id | stride |
+|---|---|---|---|---|---|
+| 0x100 player | 0x108 (form 0 via 0x4c9010; forms 1/2 -> 0, >2 -> id) | 0x209 | 0x2e | 0x101f | 0x11c |
+| 0x101 | 0 | 0x20a | 0x8a | 0x1020 | 0x46 |
+| 0x102 | 0x2de | 0x20b | 0x7a | 0x1024 | 0x92 |
+| 0x103 | 0x1e0 | 0x20c..0x20f | 0 | 0x1033 | 0x16 |
+| 0x104 | 0x1f6 | 0x210 | 0xf0 | 0x1038 | 0x2e |
+| 0x200 | 0xbe | 0x211 | 0xd0 | 0x103d | 0x80 |
+| 0x201 | 0x68 | 0x212 | 0x11c | 0x103e | 0x46 |
+| 0x202 | 0x90 | 0x213 | 0xd0 | 0x1043 | 0x34 |
+| 0x203 | 0xdc | 0x214 | 0x22e | 0x104e | 0x16 |
+| 0x204 | 0x96 | 0x215 | 0x116 | 0x104f | 0xa8 |
+| 0x205 | 0x86 | 0x101c | 0x22 | (0x101e..0x104f others) | 0 |
+| 0x206 | 0xd0 | 0x101e | 0x8a | | |
+| 0x207 | 0x74 | 0x208 | 0x22 | | |
+
+Frame counts from the formula (verified by the divisibility check): en_smb 1980 frames @0xf0, player 1763 @0x108, en_bhr 1237 @0x116, en_shb 713 @0x22e, en_hpb 1728 @0xd0, en_nse 1433 @0xdc, en_ap2/apb 1477 @0xd0, en_one 1208 @0xbe, chcaa 30 @0x2de, it_dagger 2 @0x16.
+
+Runtime (exe): the movie loader 0x59cb40..0x59cf40 reads the file raw into the arena at 0xbc9a10 — no header parse. Per-character descriptors live in a runtime linked list headed at 0x7117e50 (lookup 0x682eb0 by char id, alloc 0x682e20): `desc+0x18` = loaded `.mdl` + dataoff (the model block), `desc+0x1c` = loaded `.anm` file. Binder 0x46a7f0(char, desc+0x18, desc+0x1c) builds the bone pool via 0x4a6070(nA, parentbytes) into `char+0x238` (only if empty) and sets `char+0x70` = bone list, `char+0x2d0` = model info block. Char anim slots: main `char+0x238`, secondary `char+0x1b0`; slot+0 = bone list, slot+4 = base (= file+4, `char+0x23c = anm+4`), slot+0x14 = stride (from 0x473c10), slot+0x18 = packed `frame<<12 | subframe` (subframe = interpolation phase, mask 0x80000fff), slot+0x2c/+0x2e = current/next frame words, slot+0x30 = state 0..6, slot+0x40/+0x44 = current/next script entry. Frame addressing `frameptr = base + frame*stride` (setters 0x475370/0x4753d0 char, 0x4a7cd5 state machine). Play API 0x474260(char, slot_sel, 0, entry, anm, char): slot_sel 0/2 -> `char+0x238`, 1 -> `char+0x1b0`, >=3 -> explicit slot pointer; it sets `slot+4 (base) = anm + 4` (callers pass 0x473b20(char) = `char+0x2dc` = the loaded `.anm` buffer, so base skips the u32 id header) and stores the script-entry pointer **directly** into `slot+0x40/+0x44` — the static templates (0x6c9928, 0x6c9940) are never copied or patched, and the earlier "who patches the base field 0x800" question is resolved: nobody does. Script entry = 12 B; the only fields the engine reads are `s16 +4` frame count (>=0 -> start frame = u16 +6, else u16 +8; play API 0x4742d4), `u16 +6` start, `u16 +8` end and `u8 +0xa` loop flag (state machine 0x4a7bd4: subframe advance, `frame = +6 + cur`, bound/loop against +8/+0xa). The `0x800` dwords in the 0x6c9940 template are the +4 frame-count field (2048), not a base placeholder.
+
+Frame record (FULLY DECODED 2026-11-12; record walk verified frame-by-frame on all 92 files): self-describing compressed stream occupying `stride` bytes as the seek increment (the final frame of the two `test/` re-encodes is stored at natural length without padding). Two consumers share the grammar: 0x4a6d60 (writes translation slot bone+0x48, "current") and 0x4a6fc0 (symmetric, writes bone+0x98, "interpolation target"); both return the record end pointer (stored as next frameptr at 0x4a7baa). Grammar, read sequentially from `frameptr`:
+
+- A u32 control word heads the record and repeats inline every 8 bones; bones consume nibbles from LSB upward, `type = nibble & 7` (nibble bit 3 is ignored — the player's 0x9/0xa nibbles are types 1/2).
+- The bone loop walks the character's bone linked list (record +4 = next, +0 = parent pointer, 0 = root); bone count = `[modelblock+0xc]` = the paired `.mdl`'s nA, parent bytes = the first nA bytes at `.mdl` offB (accessors 0x4543b0/0x4543c0; binder 0x46a7f0 -> pool builder 0x4a6070, which sets bone+0 = 0 iff the parent byte is 0xff). Bone record = 0xd0 B, template identity matrix at 0x6b0980.
+- type 0/3/4/7: no channel (0 B).
+- type 1/5: rotation only, 6 B: 3 x s16 = quaternion vector part (x,y,z) x 32768 (scale constant 3.0517578125e-05 = 1/32768 at 0x68e8a0); `w = sqrt(max(0, 1 - |v|^2))` with sign +1.0 (type 1) or -1.0 (type 5), built at 0x4a6cd0, written to bone+0xb8..0xc4, then applied to the bone matrix via 0x4a6610.
+- type 2/6: translation + rotation (rotation as above, sign + for 2 / - for 6). Translation: child bone (bone+0 != 0): 3 x IEEE-754 binary16 half-floats (decoder 0x4a6810), 6 B; root bone (bone+0 == 0, parent byte 0xff): 3 x float32, 12 B. Written to bone+0x48/4c/50 (+0x54 = 0, flag +0xc8 = 1 for half / 0 for raw; consumer 2 writes +0x98/9c/a0).
+- Per-bone record size: 0, 6 (rotation) or 12/18 (translation+rotation; 18 only for root bones).
+
+Walk verification: with the paired `.mdl`'s nA parent bytes, every frame of 56/92 files consumes exactly `stride`. The 31 player files (id 0x100) walk to exactly 0x108 per frame using the first 48 parent bytes of chhaa (bones 43..47 are type 0 in every frame, so the effective count is 43..48). The source of 48 is resolved (2026-11-13, runtime): there is **no separate 48-bone skeleton** — the player's runtime bone list is chhaa's full 73 bones, and 48 is just how many bone records fit in the 0x108-byte frame record; bones 48..72 stay in bind pose. Live proof (sh3-nx oracle): the binder is called with the player char (id 0x100, char=0x8984e0) and chhaa (nA=73); `char+0x238` is 0 before the bind and holds a 73-node list after it (head 0xb7f748, mirrored to `+0x1b0`), attached via 0x4a6920(&char+0x238, head). The earlier "shared from a template char" hypothesis (2026-11-12) is NOT exercised: fn 0x473fb0 (containing the copy at 0x47404c, reading `[template+0x238]` from `0x46a8f0(player_id - 0x80)`) is never called in the observed window, and the bone-pool builder 0x4a6070 is only ever called with nA=73/3/2/1 — no 48-bone pool is ever built. The kind-1 player branch at 0x59ceea is not a bone source either: 0x461d90 is a texture converter (ddCreateTexture + LockRect/UnlockRect, format byte at param+0xc: 0x10 = 4bpp half-width copy, 0x18/0x20 = byte copy; pixels at param+0x30+[param+0xd]), i.e. a cutout-texture fixup. The 3 `ded1` files (`bg_ded1`/`en_ded1`/`test_en_ded1`) have no paired `.mdl` in the archives; a DP walk (raw/half free) fits every frame with 3 bones (root type 2 + 2 rotation bones). The 2 `test/` re-encodes fit with an unpadded final frame.
 
 ### `.cld` collision (SOLVED 2026-11-11, tool `tools/j3_cld.py`, parses all 288 files)
 
@@ -306,17 +433,15 @@ Record 0 of each polygon section is an empty record. Sections 1 and 3 are (almos
 
 A mesh group is a run of 16-byte slots: slot 0 = header `u16 nslots (incl. header) | u16 b | u16 c | u16 d` followed by four s16 `(cx, cy, cz, r)` (centre and radius of a bounding sphere, e.g. `1066 -874 4413 1812`); the group occupies `16 * nslots` bytes. The body is a stream of 8-byte items of 4 s16 each: positions `(x, y, z, 1)` in object-local units (1 unit = 1 world unit; e.g. a 2000-wide box spans `173..2173`) and normals `(nx, ny, nz, 0)` with `+-32767/-32768 = +-1.0`; normals come in pairs with positions (`[normal, position]` per vertex after the first position pair). Examples: amf1.kg2 groups at 0x70 (9 slots), 0x100 (8), 0x180 (8) are boxes (8 positions, axis-aligned normals). Validation: in amf1.kg2 the group walk is consistent for 24 groups from 0x70 to 0x900; bc11.kg2 shows 52 groups. The file container around the groups is NOT uniform: the first dwords differ (`w1` = 0x70 offset in amf1 but a small count such as 0x16/0x2/0x3/0xa in other files), so the entry/offset table and the 0x78-byte object entries the exe builds (0x4ccd90: per object a 4x4 matrix copied by 0x678070, a type id, and a world-origin offset) are not fully mapped; likely contents are box/convex shadow or collision-helper volumes. `.lv` uses the same slot style after its matrix.
 
-**`.mdl` vertex stream (observation, bg_bld.mdl, 2026-11-11):** after the part table, the 0x50 pre-header (`ffff0003 | 3 | 0x80 | ...`) and node/matrix records (bg_hum.mdl shows 4x4 matrices with rotation + translation, e.g. rows `(0, -0.96, 0.28, 0)`, `(.., -716.0, -16.56, 1.0)` = a skeleton/node hierarchy), the geometry at 0x140 is a stream of **12-byte vertices = 6 x s16** (1730 records between 0x140 and 0x5260 if contiguous). In bg_bld the records come in groups of 4 forming quads: `(-14,-319,-48,1465,3781,569) (14,-318,-48,-1294,3842,579) (-14,-322,0,1465,3824,0) (14,-322,0,-1294,3886,0)`: components 0,1,3 behave like a position (+-14, ~-320, +-1294..1465 = a thin plane), components 2,4,5 form a second 3-vector whose length equals the next quad vertex's component 4 (sqrt(48^2+3781^2+569^2) = 3824 = vertex 2's component 4), i.e. each vertex carries two vectors (position and a second basis/blend vector, possibly bone-relative positions or normal/tangent scaled by ~3824-3886). The index/strip structure, the scale, the node table layout and the skinning weights were NOT decoded; `.anm` untouched.
+**`.mdl` vertex stream (superseded 2026-11-12):** the 12-byte records are 6 x s16 = position + normal with normals at scale 4096 (the "second basis/blend vector" reading was wrong); see "`.mdl` (decoded 2026-11-12)" above for the full directory, region map and what remains inferred (J-stream attribute semantics, D/E record fields).
 
 ## Other formats (status from the morning session, unchanged)
 
 - `.cam`/`.cld` are float tables. `.tbn2` (effects) uses the container with fmt 0x08.
-- `.000` movies (7 files in `data/movie/`, 11.6-165 MB; exe table at 0x710c58-0x710c88 / 0x6b07ac: op, ed_b, ed_u, ed_n, henshin, huxx, muxx): **scrambled, NOT decoded** (2026-11-11 partial analysis).
-  - Size = 4 mod 2048 for all 7 (N 2048-byte sectors + 4 bytes); entropy 7.999; first and last dword share their top byte (huxx b4.., muxx 75.., op e9.., ed_b/henshin 8c..); both are sector-start words (the trailing 4 bytes are word 0 of sector N).
-  - Structure found: for each 32-bit word position j in the first ~24 words of a sector (the part that is MPEG-PS pack/system header in plaintext), the ciphertext word as a function of the sector number s is an EXACT cubic polynomial mod 2^32: 3rd finite difference over s is the constant 0x80000000 for every j, 4th is 0; 1st/2nd differences carry 9/20 trailing zero bits; byte 0 of each word is constant across sectors. Beyond the first ~24 words the content looks random (payload). So the cipher is a per-(sector, word) keystream with polynomial structure; plaintext is probably Sofdec/MPEG-PS 2048-byte sectors (starts 00 00 01 BA).
-  - Not a repeating XOR key (column dominance only in the first 23 bytes), not a plain affine LCG over sectors (no (A,C) reproduces word 0 across 59 sectors).
-  - The decrypt routine in the exe is NOT located: candidates ruled out so far = FP-control code at 0x670540, movie wrapper/state machine 0x59c9c0-0x59cc60 and 0x5f1b50-0x5f1bd0 (path/play only), CreateFile/ReadFile sites at 0x4056b2, 0x609055, 0x61cb27 (generic CRI file read, no decrypt seen). Next: trace the file-read callback registered for the Sofdec/MPEG stream (the sector-sized reader reached from the CRI codec zone 0x64c000-0x670000 / 0x66f7af ReadFile), or break the cipher by deriving the keystream formula from the polynomial coefficients (per-word coefficients are readable from the first sectors).
-  - Impact: needed for J5 (FMV). Without it the movie path cannot be validated; HANDOFF lists it as the open risk.
+- `.000` movies (7 files in `data/movie/`, 11.6-165 MB; exe table at 0x710c58-0x710c88 / 0x6b07ac: op, ed_b, ed_u, ed_n, henshin, huxx, muxx): **SOLVED 2026-11-13** — MPEG-2 program stream obfuscated with an MSVC-CRT LCG keystream. Tool `tools/j3_movie.py` (`--check` verifies pack syncs; decrypts to `.mpg`). Routine located statically: `FUN_00405680` (the movie DirectShow source-filter read, `ReadFile` site `0x4056b2`); verified end-to-end on all 7 files — every 2048-byte sector decrypts to a `00 00 01 BA` pack sync and the file tail ends with the pack end code `00 00 01 B9`.
+  - Scheme: the file starts with a `0x8000`-byte block whose plaintext is all zeros (the exe scan skips leading zero words). Its ciphertext carries the seed, gathered as 4 fixed bytes `seed = f[0x2dde] | f[0x3d40]<<8 | f[0x2a5c]<<16 | f[0x55e2]<<24`. LCG `state = state*0x5d588b65 + 1` (mod 2^32 — the MSVC `rand()` multiplier). `base = LCG^8192(seed)` (the state after running over the padding). In the data region (from `0x8000`) the keystream is **periodic with period `0x1000` bytes**: at every 4096-byte chunk the state resets to `base`, then per 32-bit word `state = step(state); plain = cipher ^ state`. `FUN_00405680` also zeroes the 4 seed bytes in its decrypted block (padding only; the data region is untouched).
+  - The earlier "exact cubic in sector number, 3rd difference 0x80000000" observation was an artifact of the periodic keystream interacting with the constant MPEG pack-header fields, not a true polynomial cipher.
+  - Impact: unblocks J5 (FMV). The plaintext is standard MPEG-PS (Sofdec); the port needs an MPEG-PS/video decoder but no custom cipher. Note: sh3-nx does not implement the CRI Sofdec DirectShow filter (`CoCreateInstance(E436EBB3-524F): no such class`), so movies never play in that oracle — the decrypt was located statically and verified on the files, not by runtime capture.
 - Audio: SOLVED for extraction + decode (2026-11-11), tool `tools/j3_audio.py`
   (`ls`/`x`/`wav`/`aix`). Inventory: `sound/sd.afs` = AFS, 378 entries: 362 plain
   PCM RIFF/WAVE (mostly 16-bit mono 22050 Hz; a few stereo/32 kHz/odd rates),
@@ -354,7 +479,8 @@ Loader `cam(I,0..3,G)` 0x5e8f20 stores the file pointer at [0xbcc238+4*ch], call
 - **Terminator (proven by data):** a record whose u32 at `+0x44` has bit 0 set ends the array (checked before each record, so the first record can be a terminator and the file contributes nothing). With this rule all 285 files give 934 valid records and exactly 4 trailing junk records in 261 files, 7 in 24 files (the ASCII junk records) - a constant, so the rule is right.
 - **Fix-up 0x5a1350 (per record, r = record base):** `r+0x40` s16 widened to s32; `r+0x54` sentinel 10001/10002/10003.0 -> -300/-375/-600; `r+0x58` same sentinels -> -300/-150/+150 (always 0.0 in the shipped data); `r+0x60` 0.0 -> 448.0, 10002.0 -> 384.0; `r+0x6c` selects how `r+0x70` is patched: 0 -> 10001/10002 become -500/-125, 2 -> 10001 becomes -0.5236 rad (-30 deg). Other selectors (6,7,9,10,...) are untouched. Data: `r+0x54` is the 10001 sentinel in 727 records, 10000.0 in 186 (a real value, not a sentinel), else real values (-1250, -630 ...).
 - **Zones:** two oriented rectangles per record. A = `r+0x00..0x14` (p0 x,z; p1 x,z; p2 x,z), B = `r+0x20..0x34`. The builder takes yaw from the edge p0->p1 (atan of dx,dz), builds a Y rotation (identity 0x6b0980 + 0x60c280), rotates the points (0x5a1500) and keeps the min/max box for each zone (entry `+0x18/+0x1c` and `+0x20/+0x24` for A, `+0x30/+0x34` and `+0x38/+0x3c` for B), the height range `r+0x18,r+0x1c` (entry `+0x40,+0x44`), `r+0x38,r+0x3c` (entry `+0x28,+0x2c`), and four 4x4 matrices (entry `+0x48/+0x88/+0xc8/+0x108`, rotations and their negated-translation forms). Entry `+0` = the record pointer. Zone membership is tested against the player position at `ctx+0x164`/`ctx+0x16c` with an extra margin (the init call passes 10001.0 so every record is included); the signed distance to the box is computed by 0x4c02d0 (flag `r+0x44 & 0x80` is passed in and clamps negative distances to 0).
-- **Still open:** the meaning of the ids at `r+0x48/0x4c/0x50/0x5c`, of the selector values other than 0 and 2, and what `0x4c05c0` (callback passed to 0x4986c0 at the end of 0x4c3ea0) does per frame with the camera position/angles stored at 0xba99c4..0xba99e0.
+- **Per-frame camera (RESOLVED 2026-11-13, `FUN_004c3ea0` + the `0x4c05c0` callback):** `0x4c3ea0` is the camera update. It reads the player world position (`0x472fe0`), sets the **look-at target = player position** (`0xba99d4..e0`), runs the zone solver `0x4c0d10`, then computes the **camera position** (`0xba99c4..d0`) as a third-person chase cam: default mode = `player + (cos(θ+π), sin(θ+π))·1500` horizontally with `y = player_y − 1000` (θ = player facing yaw, `0x60baa0/0x60bb60/0x60bb70` = angle-normalize/sin/cos); mode 8 (`[DAT_0711f9d8+0x6c]==8`) = orbit a fixed anchor (`DAT_0711f9d8+0x20/+0x24`) at `atan2(dz,dx) − 15°`, `dist = sqrt(dx²+dz²) − 200`, `y = player_y − 1200`. It then registers the exporter `FUN_004c05c0` via `0x4986c0(&LAB_004c05c0, 999999, 1)`; that callback (a leaf, not a Ghidra "procedure") just copies the camera position vec4 (`0xba99c4..d0`) and look-at vec4 (`0xba99d4..e0`) plus two flag dwords (=1) and a zero out to the caller's buffers. So the `.cam` records are **per-zone camera parameter overrides** (the sentinel-resolved `r+0x54/0x58/0x60/0x70` = distance/height/angle defaults) keyed by the two oriented trigger rectangles; the base chase-cam constants are 1500/1000 (default) or anchor-orbit (mode 8).
+- **Still open:** the exact meaning of the ids at `r+0x48/0x4c/0x50/0x5c` and the selector values other than 0 and 2 (they gate which zone is active and which override set applies, but the id→behaviour table is not pinned).
 
 ### `.kg2` / `.lv` container SOLVED (2026-11-12; exe loop 0x4ccd90 + data; parser `tools/j3_kg2.py`)
 
@@ -364,8 +490,14 @@ This replaces the earlier "container not uniform / entry table not mapped" notes
 - Then `nobj` objects, each: 16 B header (`u32 0 | u32 index | ngroups<<16 | 0 | 0`; `ngroups` = hi16 of the u32 at +4), a second 16 B row, a **4x4 float matrix at object+0x20** (copied by 0x678070 into the 0x78-byte runtime entry; the old "matrix at 0x30" is object 0's), and the groups from object+0x60.
 - A group is `nslots` 16-byte slots (the exe advances by `s16(hi16 of the u32 at group+4) * 16`). Slot 0: `u16 nslots | u16 hi | u16 type | u16 nslots`, and its last 8 bytes are the bounding sphere `(cx,cy,cz,r)` as 4 s16. Then 8-byte items of 4 s16: positions `(x,y,z,1)` and normals `(nx,ny,nz,0)` (+-32767 = +-1.0). A group whose u32 at +4 equals 3 is special-cased by the loop (time-of-day state at 0xbaca60).
 - **Proof:** with this walk all 232 non-empty `.kg2` files (48 are zero bytes) parse exactly to their last byte, 9,095 objects in total. The 4 `.lv` files (cu1e, mrdf, mu12, mu22) use the same container.
-- **Still open:** exact item order/count per group type (type = low16 of the u32 at +4: 6, 5, 7, 11, 15, 9 ... most common) and the runtime meaning of the objects (0x78-byte entries, up to 4 per channel; consumers 0x4877d0, 0x489850, and 0x4d1067 for `.lv`). The geometry looks like shadow/light-volume meshes ("kage"), not render geometry.
+- **Runtime registration (confirmed 2026-11-13, `FUN_004877d0`):** the consumer caps at **4 channels** (`DAT_0712df92 > 3` rejects), reads `nobj = s16 @ kg2+4`, allocates one **0x58-byte header** per channel into the global list `DAT_0712dfec[0..3]` plus a `nobj * 0x78` entry array at `header+0x54`, sets `header+0xc = 1.0`, then calls `0x4ccd90` to fill. Channel (`param_3`) 0 bumps `DAT_0712df86`, channel 3 bumps `DAT_0712df8c` and sets `DAT_0712df80`. So the 0x78-byte entries are per-object runtime records (matrix from object+0x20 + type + world origin), one array per loaded `.kg2` channel.
+- **Runtime USE resolved (2026-11-13, `FUN_00489850` + `FUN_00489fb0` + `0x4cc900`/`0x4ccb30`/`0x4cd1b0`/`0x4d1550`):** the registered entries feed a **per-frame render/display queue** — not collision, not baked shadow geometry. Two per-frame passes:
+  - **Update `0x489850`:** loads the 4 `.kg2` cache slots (`0x447210`/`0x447270`, same slot-accessor family as `.map`; channel 1 has a built-in fallback blob at `0x6b83b0` in mode 3) through `0x4877d0`; computes a plane-side value `dot(player − hdr.anchor[+0x20..28], hdr.dir[+0x30..38])`; for category `hdr+0x1e==0` calls `0x487e30` → `0x4cc900` (walks the hierarchy list at `hdr+0x50`: records `{s16 entry-idx, s16 nchild, children…}`, pushes them into queue `DAT_0712dffc` with flag 1, back-links `entry+0x68/+0x64`, sets `hdr+0x18=1` when a child of type 1/2/4/5/6 appears) + `0x4ccb30` (pushes `{hdr, type=2}` and one `{entry+0x64}` slot per entry into display queue `DAT_0712e004`, then applies the per-id exclusion table at `DAT_0712e2a2` — `s16 id` + ≤32 `s16` entry indices — zeroing disabled entries); category `hdr+0x1e==3` goes through `0x488000` → `0x4cca20` + the same `0x4ccb30`.
+  - **Render prep `0x489fb0`:** refreshes per-category context blocks (`DAT_0712d060/d260/d660/d960/db60/dd60/ce60/e080`) via `0x4d1550` (copies world matrix + the two view matrices at `view+0x134/+0x174` + player pos + the plane-side flag); for category-3 channels places a **directional-light anchor** at `−dir×10000 + entry0.pos` with a scale-0.04 matrix (`0x4163a0`); a separate 16-slot table `DAT_0712dfac[0..15]` (category `s8 +0x35` ∈ {0,3,4}, `u16` id pair `+4/+6` resolved by `0x46a220`/`0x473600`/`0x46a050` = level-object lookup by (room,obj)) handles object-attached lights incl. a proximity push (`dist<2000` → raise by `533.33−0.2667·dist`, cap 400); consumes the per-frame scratch table `DAT_0712d460` (4 records × 66 B: `s16 id` + ≤16 `s16` entry indices + key `+0x20`; `0x4cd1b0` matches `id` against `hdr+2` and marks entries via `0x450bb0`, assert string `"can't get bg move matrix"` at `0x692718`), then clears it to −1 at frame end.
+  - `0x4cd1b0` also transforms each entry position (`entry+0x40`) by the channel matrix and stores a clamped distance at `entry+0x50` (entry type = `s16 @ entry+0x60>>16`: type 3 → min 8000, type 4 → min 10000, else raw).
+  - **Conclusion:** `.kg2` = the per-room **dynamic light/effect object layer** — positioned entries + directional channels + level-script enable/disable, queued to the renderer each frame. The old "shadow-caster meshes ('kage')" guess is superseded; the compact groups are per-object volumes attached to these entries.
+- **Still open:** which render pass consumes the `DAT_0712e004`/`DAT_0712dffc` queue records (exact draw semantics), the group-type grammar (type = low16 of the u32 at +4: 6, 5, 7, 11, 15, 9 ... most common), and the `DAT_0712dfac` light-slot category semantics (0/3/4, types `0x100`/`0x8xx`).
 
 ### `.mdl` outer structure correction (2026-11-12)
-A character `.mdl` (e.g. chhaa.mdl, 5.25 MB) is the model block (size = the u32 at +0x0c, 0xc1b50 for chhaa) followed by a normal `ffffffff` texture container at that offset (4 subs for chhaa: 512x512, 512x512, 512x1024 ...). So only ~790 KB is geometry/skeleton; the rest is textures readable with `j3_arc.walk_subs`/`decode_container`. The `.mdl` field-level decode and `.anm` remain open; the working brief is `docs/BRIEF-MDL-ANM.md`.
+A character `.mdl` (e.g. chhaa.mdl, 5.25 MB) is the model block (the u32 at +0x0c is the ABSOLUTE end offset of the model block = start of the `ffffffff` container; 0xc1b50 for chhaa) followed by a normal `ffffffff` texture container at that offset (4 subs for chhaa: 512x512, 512x512, 512x1024 ...). So only ~790 KB is geometry/skeleton; the rest is textures readable with `j3_arc.walk_subs`/`decode_container`. The `.mdl` directory is now decoded (see "`.mdl` (decoded 2026-11-12, J3 item b)" above; tool `tools/j3_mdl.py`); `.anm` is decoded (container: size formula + stride table; per-frame record: full channel grammar, walk verified on all 92 files — see "`.anm` character animation" above); the working brief is `docs/BRIEF-MDL-ANM.md`.
 
