@@ -28,5 +28,6 @@ if grep -q '^SH4_REQUIRE_SHADER_CACHE:BOOL=ON$' "$B/CMakeCache.txt"; then
     fi
 fi
 cmake --build "$B" -j"$(nproc)"
-mkdir -p ../build && cp "$B/sh4.vpk" ../build/
-ls -la ../build/sh4.vpk
+VPK=sh3.vpk; grep -q '^SH3:BOOL=OFF$' "$B/CMakeCache.txt" && VPK=sh4.vpk
+mkdir -p ../build && cp "$B/$VPK" ../build/
+ls -la "../build/$VPK"

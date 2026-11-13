@@ -12,10 +12,12 @@ if(SH3)
   set(VITA_APP_NAME "Silent Hill 3")
   set(VITA_TITLEID  "SILH00003")
   set(VITA_LOG_DIR  "sh3")
+  set(VITA_VPK_NAME "sh3.vpk")
 else()
   set(VITA_APP_NAME "Silent Hill 4: The Room")
   set(VITA_TITLEID  "SILH00004")
   set(VITA_LOG_DIR  "sh4")
+  set(VITA_VPK_NAME "sh4.vpk")
 endif()
 set(VITA_VERSION "00.01" CACHE STRING "VPK application version (keep the title ID unchanged)")
 if(SH3)
@@ -155,7 +157,7 @@ if(NOT SH3)   # SH4 controller-help art (not shipped in the SH3 repo; the SH3 bu
     FILE assets/controls/README.md ui/CONTROLLER-ART-CREDITS.md
     FILE assets/controls/Kenney-License.txt ui/Kenney-License.txt)
 endif()
-vita_create_vpk(sh4.vpk ${VITA_TITLEID} eboot.bin
+vita_create_vpk(${VITA_VPK_NAME} ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
   FILE livearea/icon0.png sce_sys/icon0.png

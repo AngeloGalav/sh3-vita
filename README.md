@@ -38,10 +38,12 @@ Tested on a PC only (Docker image `sh3host:local`, Mesa software GL, dummy audio
 - on your computer: Docker, and Python 3 for the recompiler
 
 1. Generate the C code from your own executable: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
-2. Build the package: `docker/build-vita.sh`. It writes `sh4.vpk` (the name is inherited from SH4); title ID `SILH00003`. Install it with VitaShell.
+2. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
 3. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
 
-Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4). This project provides no download of game files or of any Sony module.
+Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
+
+With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). This project provides no download of game files or of any Sony module.
 
 ## Options
 
@@ -79,7 +81,7 @@ Not confirmed: anything on a physical Vita, real audio output (only a dummy driv
 
 ## Building and working on it
 
-The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is `docker/host-build.sh` (`port/Makefile.linux`). Several names are inherited from the SH4 port and not renamed: the CMake target and `sh4.vpk`, the `SH4_*` variables and options, `sh4log.txt`. `-DSH3=OFF` builds the inherited SH4 layout, which is not maintained here.
+The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is `docker/host-build.sh` (`port/Makefile.linux`). Several names are inherited from the SH4 port and not renamed: the CMake target `sh4`, the `SH4_*` variables and options, `sh4log.txt`. `-DSH3=OFF` builds the inherited SH4 layout, which is not maintained here.
 
 | Path | What's in it |
 | --- | --- |
