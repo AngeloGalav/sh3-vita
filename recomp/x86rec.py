@@ -328,8 +328,13 @@ if TARGET == "sh3":
     # CRT routines whose internal jump tables live in .text (not recognised as switches) are replaced by host natives.
     OVERRIDES = {
         0x66f9c0: "nat_crt_memcpy",   # _memcpy/_memmove (cdecl dst, src, n) -> returns dst
-        0x6635da: "nat_crt_cifmod",
-        0x5e62a0: "nat_cfg_texq",     # Options > Configuration "Screen Mode" row -> "Textures" (texture quality), src/host/sh3_texq_menu.c   # _CIfmod: x87 ST(1)=x, ST(0)=y -> ST(0)=fmod(x,y) (CRT __cintrindisp2 uses fxam/xlat + .text jump table)
+        0x6635da: "nat_crt_cifmod",   # _CIfmod: x87 ST(1)=x, ST(0)=y -> ST(0)=fmod(x,y) (CRT __cintrindisp2 uses fxam/xlat + .text jump table)
+        0x5e62a0: "nat_cfg_texq",     # Options > Configuration "Screen Mode" row -> "Textures" (texture quality), src/host/sh3_texq_menu.c
+    }
+    # The port's own screens around the original ones (src/host/sh3_port_ui.c): F_xxx_orig keeps the game's body.
+    WRAPS = {
+        0x5d8e80: "nat_title_mode",   # title screen mode: the port's credits page first, then the title
+        0x5d80c0: "nat_title_menu",   # title menu rows: then the port's version in the bottom left corner
     }
 
 

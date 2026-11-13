@@ -18,6 +18,22 @@ else()
   set(VITA_LOG_DIR  "sh4")
 endif()
 set(VITA_VERSION "00.01" CACHE STRING "VPK application version (keep the title ID unchanged)")
+if(SH3)
+  # The port's version lives in the repository's VERSION file (0.0.1): shown in the title screen's bottom left
+  # corner (src/host/sh3_port_ui.c) and turned into the LiveArea APP_VER (0.0.1 -> 00.01, 1.2.3 -> 01.23).
+  file(READ ${CMAKE_SOURCE_DIR}/../VERSION SH3_VERSION)
+  string(STRIP "${SH3_VERSION}" SH3_VERSION)
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/../VERSION)
+  string(REGEX MATCH "^([0-9]+)\\.([0-9])\\.([0-9])" _v "${SH3_VERSION}")
+  if(_v)
+    math(EXPR _major "${CMAKE_MATCH_1}")
+    if(_major LESS 10)
+      set(_major "0${_major}")
+    endif()
+    set(VITA_VERSION "${_major}.${CMAKE_MATCH_2}${CMAKE_MATCH_3}")
+  endif()
+  add_compile_definitions(SH3_VERSION="${SH3_VERSION}")
+endif()
 
 # SH3 (default for this repo): generated code in port/gen-sh3 (recomp/x86rec.py --target sh3), same runtime as
 # port/Makefile.linux (SH4-only gameplay hooks skipped, SH3 stubs added). -DSH3=OFF builds the inherited SH4 layout.
@@ -38,7 +54,7 @@ if(SH3)
             rt/cinematic.c rt/model.c rt/model_uv.c rt/audit.c)
     list(REMOVE_ITEM RT_SRC ${CMAKE_SOURCE_DIR}/src/${f})
   endforeach()
-  list(APPEND RT_SRC src/host/sh3_stubs.c src/host/sh3_texq_menu.c)
+  list(APPEND RT_SRC src/host/sh3_stubs.c src/host/sh3_texq_menu.c src/host/sh3_port_ui.c)
 endif()
 
 # Vita RAM is tight: guest memory (20 MB image + game heap) and host heap.
