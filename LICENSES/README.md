@@ -1,6 +1,6 @@
 # Third-party license texts
 
-These documents preserve third-party terms. They do not license the SH4 port as a whole, the original game, or generated game code. No project-wide license has been selected by adding this directory.
+These documents preserve third-party terms. They do not license the SH3/SH4 port as a whole, the original game, or generated game code. No project-wide license has been selected by adding this directory.
 
 | File | Provenance |
 |---|---|
@@ -14,3 +14,5 @@ These documents preserve third-party terms. They do not license the SH4 port as 
 | `MIT.txt` | Standard MIT license text from the [SPDX license list](https://github.com/spdx/license-list-data/blob/main/text/MIT.txt), without assigning ownership to the port maintainer. Used with the existing pl_mpeg attribution in `THIRD_PARTY_NOTICES.md`. |
 
 This is an initial collection, not a complete dependency/source-compliance certification. See [the audit](../docs/DISTRIBUTION-LICENSE-AUDIT.md) for unresolved source, linking, generated-code and packaging questions. Merely including license texts does not satisfy all source or relinking obligations.
+
+**Not in this directory yet** (linked or pulled in by the Vita build, see `THIRD_PARTY_NOTICES.md`): zlib, newlib, libgcc/libstdc++ runtime exception, taiHEN. Their texts have to be taken from the VitaSDK installation that builds a release; none has been written from memory here.
