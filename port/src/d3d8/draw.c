@@ -638,6 +638,7 @@ static GLuint color_tex(Surface *s, int *level) {
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gfx_sampler_forget(s->fbo_tex);
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, (GLsizei)(s->w >> rt_shift(s)), (GLsizei)(s->h >> rt_shift(s)), 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
     }
     return s->fbo_tex;
@@ -653,8 +654,10 @@ static GLuint depth_rb(Surface *s) {
 }
 int surf_is_gl(const Surface *s) { return s->is_backbuffer || (s->usage & 1) || (s->tex && (s->tex->usage & 1)); }
 
+static void gl_state_invalidate(void);
 void gfx_bind_target(Device *d) {
     int level;
+    gl_state_invalidate();   // a target switch is a scene boundary on vitaGL: send the states again
     GLuint ct = color_tex(d->rt, &level);
     // vitaGL fixes the sceGxm target size of an FBO at its first scene: one FBO per target size.
     typedef struct { GLuint w, h, fbo, ct, rb; int level; } FboSlot;
@@ -714,35 +717,88 @@ static GLenum sop_of(uint32_t o) {
     static const GLenum t[] = {GL_KEEP, GL_KEEP, GL_ZERO, GL_REPLACE, GL_INCR, GL_DECR, GL_INVERT, GL_INCR_WRAP, GL_DECR_WRAP};
     return o < 9 ? t[o] : GL_KEEP;
 }
+// GL state cache. apply_states()/apply_sampler() used to re-send ~15 state calls per draw and 4 glTexParameteri per bound texture
+// although ~92 % of the draws change nothing against the previous one. Every item remembers the last value issued; a call is made only
+// when the value differs or is unknown. Whatever else touches these states (Clear, CopyRects, Present, a target change) calls
+// gl_state_invalidate(), after which every item is sent again once.
+enum { C_VP = 1, C_ZR = 2, C_DTEST = 4, C_DFUNC = 8, C_DMASK = 16, C_BLEND = 32, C_BFUNC = 64, C_BEQ = 128, C_CULL = 256, C_CFACE = 512,
+       C_FFACE = 1024, C_STEST = 2048, C_SFUNC = 4096, C_SOP = 8192, C_SMASK = 16384, C_CMASK = 32768, C_POEN = 65536,
+       C_POVAL = 131072, C_SCISSOR = 262144 };
+static struct {
+    unsigned known;                       // C_* bits whose value below is what GL currently holds
+    GLint vp[4]; float zr[2];
+    uint8_t dtest, dmask, blend, cull, stest, poen, scissor;
+    GLenum dfunc, bfunc[2], beq, cface, sfunc, sop[3];
+    GLint sref; GLuint smask_f, smask; uint32_t cmask, poval;
+} gc;
+static void gl_state_invalidate(void) { gc.known = 0; }
+static void gc_cap(unsigned bit, uint8_t *cur, int on, GLenum cap) {
+    if ((gc.known & bit) && *cur == on) return;
+    gc.known |= bit; *cur = (uint8_t)on;
+    if (on) glEnable(cap); else glDisable(cap);
+}
 static void apply_states(Device *d) {
     uint32_t *rs = d->rs;
     unsigned vsh = rt_shift(d->rt);
-    glViewport((GLint)(d->vp.x >> vsh), (GLint)(d->vp.y >> vsh), (GLsizei)(d->vp.w >> vsh), (GLsizei)(d->vp.h >> vsh));
-    glDepthRange(d->vp.minz, d->vp.maxz);
-    if (rs[7] && d->ds) { glEnable(GL_DEPTH_TEST); glDepthFunc(cmp_of(rs[23])); } else glDisable(GL_DEPTH_TEST);
-    glDepthMask(rs[14] ? GL_TRUE : GL_FALSE);
+    GLint vp[4] = {(GLint)(d->vp.x >> vsh), (GLint)(d->vp.y >> vsh), (GLint)(d->vp.w >> vsh), (GLint)(d->vp.h >> vsh)};
+    if (!(gc.known & C_VP) || memcmp(vp, gc.vp, sizeof vp)) { glViewport(vp[0], vp[1], vp[2], vp[3]); memcpy(gc.vp, vp, sizeof vp); gc.known |= C_VP; }
+    float zr[2] = {d->vp.minz, d->vp.maxz};
+    if (!(gc.known & C_ZR) || memcmp(zr, gc.zr, sizeof zr)) { glDepthRange(zr[0], zr[1]); memcpy(gc.zr, zr, sizeof zr); gc.known |= C_ZR; }
+    int dt = rs[7] && d->ds;
+    gc_cap(C_DTEST, &gc.dtest, dt, GL_DEPTH_TEST);
+    if (dt) {
+        GLenum f = cmp_of(rs[23]);
+        if (!(gc.known & C_DFUNC) || gc.dfunc != f) { glDepthFunc(f); gc.dfunc = f; gc.known |= C_DFUNC; }
+    }
+    int dm = rs[14] ? 1 : 0;
+    if (!(gc.known & C_DMASK) || gc.dmask != dm) { glDepthMask(dm ? GL_TRUE : GL_FALSE); gc.dmask = (uint8_t)dm; gc.known |= C_DMASK; }
+    gc_cap(C_BLEND, &gc.blend, rs[27] != 0, GL_BLEND);
     if (rs[27]) {
-        glEnable(GL_BLEND);
-        glBlendFunc(blend_of(rs[19], 1), blend_of(rs[20], 0));
+        GLenum bf[2] = {blend_of(rs[19], 1), blend_of(rs[20], 0)};
+        if (!(gc.known & C_BFUNC) || gc.bfunc[0] != bf[0] || gc.bfunc[1] != bf[1]) { glBlendFunc(bf[0], bf[1]); gc.bfunc[0] = bf[0]; gc.bfunc[1] = bf[1]; gc.known |= C_BFUNC; }
         static const GLenum eq[] = {GL_FUNC_ADD, GL_FUNC_ADD, GL_FUNC_SUBTRACT, GL_FUNC_REVERSE_SUBTRACT, GL_MIN, GL_MAX};
-        glBlendEquation(rs[171] < 6 ? eq[rs[171]] : GL_FUNC_ADD);
-    } else glDisable(GL_BLEND);
+        GLenum be = rs[171] < 6 ? eq[rs[171]] : GL_FUNC_ADD;
+        if (!(gc.known & C_BEQ) || gc.beq != be) { glBlendEquation(be); gc.beq = be; gc.known |= C_BEQ; }
+    }
     // Y-flipped rendering: vertex order is reversed, the D3D front face (clockwise) becomes CCW.
-    if (rs[22] == 1) glDisable(GL_CULL_FACE);
-    else { glEnable(GL_CULL_FACE); glFrontFace(GL_CCW); glCullFace(rs[22] == 2 ? GL_FRONT : GL_BACK); }
-    if (rs[52] && d->ds) {
-        glEnable(GL_STENCIL_TEST);
-        glStencilFunc(cmp_of(rs[56]), (GLint)rs[57], rs[58]);
-        glStencilOp(sop_of(rs[53]), sop_of(rs[54]), sop_of(rs[55]));
-        glStencilMask(rs[59]);
-    } else glDisable(GL_STENCIL_TEST);
-    uint32_t cw = rs[168];
-    glColorMask(cw & 1, (cw >> 1) & 1, (cw >> 2) & 1, (cw >> 3) & 1);
-    if (rs[47]) { glEnable(GL_POLYGON_OFFSET_FILL); glPolygonOffset(0.0f, -(float)rs[47]); }
-    else glDisable(GL_POLYGON_OFFSET_FILL);
-    glDisable(GL_SCISSOR_TEST);
+    gc_cap(C_CULL, &gc.cull, rs[22] != 1, GL_CULL_FACE);
+    if (rs[22] != 1) {
+        if (!(gc.known & C_FFACE)) { glFrontFace(GL_CCW); gc.known |= C_FFACE; }
+        GLenum cf = rs[22] == 2 ? GL_FRONT : GL_BACK;
+        if (!(gc.known & C_CFACE) || gc.cface != cf) { glCullFace(cf); gc.cface = cf; gc.known |= C_CFACE; }
+    }
+    int st = rs[52] && d->ds;
+    gc_cap(C_STEST, &gc.stest, st, GL_STENCIL_TEST);
+    if (st) {
+        GLenum sf = cmp_of(rs[56]);
+        if (!(gc.known & C_SFUNC) || gc.sfunc != sf || gc.sref != (GLint)rs[57] || gc.smask_f != rs[58]) {
+            glStencilFunc(sf, (GLint)rs[57], rs[58]); gc.sfunc = sf; gc.sref = (GLint)rs[57]; gc.smask_f = rs[58]; gc.known |= C_SFUNC;
+        }
+        GLenum so[3] = {sop_of(rs[53]), sop_of(rs[54]), sop_of(rs[55])};
+        if (!(gc.known & C_SOP) || memcmp(so, gc.sop, sizeof so)) { glStencilOp(so[0], so[1], so[2]); memcpy(gc.sop, so, sizeof so); gc.known |= C_SOP; }
+        if (!(gc.known & C_SMASK) || gc.smask != rs[59]) { glStencilMask(rs[59]); gc.smask = rs[59]; gc.known |= C_SMASK; }
+    }
+    uint32_t cw = rs[168] & 15;
+    if (!(gc.known & C_CMASK) || gc.cmask != cw) { glColorMask(cw & 1, (cw >> 1) & 1, (cw >> 2) & 1, (cw >> 3) & 1); gc.cmask = cw; gc.known |= C_CMASK; }
+    gc_cap(C_POEN, &gc.poen, rs[47] != 0, GL_POLYGON_OFFSET_FILL);
+    if (rs[47] && (!(gc.known & C_POVAL) || gc.poval != rs[47])) { glPolygonOffset(0.0f, -(float)rs[47]); gc.poval = rs[47]; gc.known |= C_POVAL; }
+    gc_cap(C_SCISSOR, &gc.scissor, 0, GL_SCISSOR_TEST);
 }
-static void apply_sampler(Device *d, int s) {
+// GL keeps the sampler parameters in the texture object: remember them per GL name (direct-mapped; a collision just costs a resend).
+// 0 = unknown (no GL enum is 0). Only the consumer thread touches the table.
+static struct { GLuint name; GLenum p[4]; } sc_tab[4096];
+void gfx_sampler_forget(GLuint name) {   // the name is deleted or its parameters are set elsewhere
+    unsigned i = name & 4095;
+    if (sc_tab[i].name == name) memset(&sc_tab[i], 0, sizeof sc_tab[i]);
+}
+static void sampler_set(GLenum target, GLuint name, const GLenum v[4]) {
+    static const GLenum pn[4] = {GL_TEXTURE_MAG_FILTER, GL_TEXTURE_MIN_FILTER, GL_TEXTURE_WRAP_S, GL_TEXTURE_WRAP_T};
+    unsigned i = name & 4095;
+    if (sc_tab[i].name != name) { memset(&sc_tab[i], 0, sizeof sc_tab[i]); sc_tab[i].name = name; }
+    for (int k = 0; k < 4; k++)
+        if (sc_tab[i].p[k] != v[k]) { glTexParameteri(target, pn[k], (GLint)v[k]); sc_tab[i].p[k] = v[k]; }
+}
+static void apply_sampler(Device *d, int s, GLuint name) {
     uint32_t *t = d->tss[s];
     static const GLenum wrap[] = {GL_REPEAT, GL_REPEAT, GL_MIRRORED_REPEAT, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE, GL_MIRRORED_REPEAT};
     GLenum mag = t[16] >= 2 ? GL_LINEAR : GL_NEAREST;
@@ -750,22 +806,18 @@ static void apply_sampler(Device *d, int s) {
     if (d->tex[s]->levels > 1 && t[18])
         min = t[17] >= 2 ? (t[18] >= 2 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
                          : (t[18] >= 2 ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, (GLint)mag);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)min);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap[t[13] < 6 ? t[13] : 1]);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)wrap[t[14] < 6 ? t[14] : 1]);
+    GLenum v[4] = {mag, min, wrap[t[13] < 6 ? t[13] : 1], wrap[t[14] < 6 ? t[14] : 1]};
+    sampler_set(GL_TEXTURE_2D, name, v);
 }
-static void apply_sampler_cube(Device *d, int s) {   // cube maps: D3D filters, edges always clamped (seamless-ish)
+static void apply_sampler_cube(Device *d, int s, GLuint name) {   // cube maps: D3D filters, edges always clamped (seamless-ish)
     uint32_t *t = d->tss[s];
     GLenum mag = t[16] >= 2 ? GL_LINEAR : GL_NEAREST;
     GLenum min = t[17] >= 2 ? GL_LINEAR : GL_NEAREST;
     if (cube_levels(d->cube[s]) > 1 && t[18])
         min = t[17] >= 2 ? (t[18] >= 2 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
                          : (t[18] >= 2 ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, (GLint)mag);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, (GLint)min);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    GLenum v[4] = {mag, min, GL_CLAMP_TO_EDGE, GL_CLAMP_TO_EDGE};
+    sampler_set(GL_TEXTURE_CUBE_MAP, name, v);
 }
 static void set_color4(GLint loc, uint32_t argb) {
     if (uniform_valid(loc))
@@ -1178,14 +1230,16 @@ static void draw_impl(Device *d, uint32_t prim, uint32_t first, uint32_t nverts,
     for (int s = 0; s < MAX_STAGES; s++) {
         if (d->cube[s]) {
             glActiveTexture(GL_TEXTURE0 + (GLenum)s);
-            glBindTexture(GL_TEXTURE_CUBE_MAP, cube_gl(d->cube[s]));
-            apply_sampler_cube(d, s);
+            GLuint cn = cube_gl(d->cube[s]);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, cn);
+            apply_sampler_cube(d, s, cn);
             continue;
         }
         if (!d->tex[s]) continue;
         glActiveTexture(GL_TEXTURE0 + (GLenum)s);
-        glBindTexture(GL_TEXTURE_2D, tex_gl(d->tex[s]));
-        apply_sampler(d, s);
+        GLuint tn = tex_gl(d->tex[s]);
+        glBindTexture(GL_TEXTURE_2D, tn);
+        apply_sampler(d, s, tn);
     }
     glActiveTexture(GL_TEXTURE0);
     PH(1);
@@ -1308,6 +1362,7 @@ void gfx_clear(Device *d, uint32_t flags, uint32_t color, float z, uint32_t sten
     SLOW("clear", flags, nrects);
     extern unsigned g_stat_clears;
     g_stat_clears++;
+    gl_state_invalidate();   // Clear sets colour/depth/stencil masks and the scissor test itself
     GLbitfield m = 0;
     if (flags & 1) { m |= GL_COLOR_BUFFER_BIT; glColorMask(1, 1, 1, 1);
         glClearColor((float)((color >> 16) & 255) / 255.f, (float)((color >> 8) & 255) / 255.f,
@@ -1415,6 +1470,8 @@ void gfx_copy_gl(Surface *src, Surface *dst, uint32_t n, const int32_t *rects, c
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        gfx_sampler_forget(st);   // the 4 parameters above bypass the cache
+        gl_state_invalidate();    // viewport, enables and colour mask were set directly
         float u0 = (float)x / (float)src->w, u1 = (float)(x + w) / (float)src->w;
         float v0 = (float)y / (float)src->h, v1 = (float)(y + h) / (float)src->h;
         float quad[] = {-1, -1, u0, v0, 1, -1, u1, v0, -1, 1, u0, v1, 1, 1, u1, v1};
@@ -1684,6 +1741,7 @@ void gfx_present(Device *d) {
     if (tp < 0) tp = getenv("SH4_TRACE_COPY") != NULL;
     if (tp) rt_log("[present] frame %u bind fbo 0\n", frames);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    gl_state_invalidate();   // the final blit sets viewport, enables and colour mask directly
     if (tp) rt_log("[present] bind ok\n");
     // Scaling that keeps the aspect ratio.
     Surface *display = d->ui_display ? d->ui_display : d->backbuffer;

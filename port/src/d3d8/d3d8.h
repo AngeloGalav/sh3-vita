@@ -173,6 +173,7 @@ void gfx_draw(Device *d, uint32_t prim, uint32_t first_vertex, uint32_t nverts, 
 void gfx_clear(Device *d, uint32_t flags, uint32_t color, float z, uint32_t stencil, int nrects, const int32_t *rects);   // rects: 4 int32 per rectangle (host)
 void gfx_present(Device *d);
 void gfx_bind_target(Device *d);
+void gfx_sampler_forget(GLuint name);   // drop the cached sampler parameters of a GL texture name (deleted or set outside apply_sampler)
 void tex_upload(Texture *t, int level);
 GLuint tex_gl(Texture *t);
 unsigned rt_shift(const Surface *s);   // Vita: render targets > 1024 reduced by a power of 2 (VRAM)

@@ -982,7 +982,7 @@ void res_free(int kind, void *p) {
     switch (kind) {
     case K_TEXTURE: {
         Texture *t = p;
-        if (t->gl) { glDeleteTextures(1, &t->gl); g_att_stale++; }
+        if (t->gl) { gfx_sampler_forget(t->gl); glDeleteTextures(1, &t->gl); g_att_stale++; }
         for (uint32_t l = 0; l < t->levels; l++) {
             Surface *s = t->lv[l];
             if (s->mem) g_mem_tex -= fmt_level_size(t->fmt, s->w, s->h);
@@ -998,7 +998,7 @@ void res_free(int kind, void *p) {
         Surface *s = p;
         g_att_stale++;
         if (s->rb) glDeleteRenderbuffers(1, &s->rb);
-        if (s->fbo_tex) glDeleteTextures(1, &s->fbo_tex);
+        if (s->fbo_tex) { gfx_sampler_forget(s->fbo_tex); glDeleteTextures(1, &s->fbo_tex); }
         prep_gfree(s->com.guest, s->mem);
         free(s);
         break;
