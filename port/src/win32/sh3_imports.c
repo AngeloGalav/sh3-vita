@@ -35,9 +35,9 @@ K(CreateSemaphoreA) {   // modelled as an auto-reset event signalled while the c
 }
 K(ReleaseSemaphore) { HOSTFN; w32_event_set(ARG(1), 1); if (ARG(3)) W32(ARG(3), 0); STDRET(3, 1); }
 K(DuplicateHandle) { HOSTFN; if (ARG(4)) W32(ARG(4), ARG(2)); STDRET(7, 1); }
-static Thread *thread_of(uint32_t h) { return h == 0xfffffffeu ? w32_tl_self : h_get(h, H_THREAD); }
+static Thread *thread_of(const CPU *c, uint32_t h) { return h == 0xfffffffeu ? w32_thread_of_cpu(c) : h_get(h, H_THREAD); }
 K(SuspendThread) {   // a thread suspending itself (the CRI workers idle this way) blocks until another thread resumes it
-    HOSTFN; Thread *t = thread_of(ARG(1));
+    HOSTFN; Thread *t = thread_of(c, ARG(1));
     SLOG("[sync] cpu=%p SuspendThread(%x) self=%d\n", (void *)c, ARG(1), t && t->c == c);
     if (!t) STDRET(1, 0xffffffffu);
     SDL_LockMutex(g_sync);
@@ -47,7 +47,7 @@ K(SuspendThread) {   // a thread suspending itself (the CRI workers idle this wa
     STDRET(1, prev);   // suspending ANOTHER thread only counts: guest threads cannot be stopped asynchronously here
 }
 K(ResumeThread) {
-    HOSTFN; Thread *t = thread_of(ARG(1));
+    HOSTFN; Thread *t = thread_of(c, ARG(1));
     SLOG("[sync] cpu=%p ResumeThread(%x)\n", (void *)c, ARG(1));
     if (!t) STDRET(1, 0xffffffffu);
     SDL_LockMutex(g_sync);

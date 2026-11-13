@@ -32,7 +32,12 @@ static volatile uint32_t tail __attribute__((aligned(64)));   // published by th
 static volatile int c_sleep __attribute__((aligned(64)));
 static SDL_sem *sem;
 static Device *pd;
-static __thread int on_prep;
+// "Running on the consumer": the prep thread, or a producer pumping the ring itself (sync/lazy modes).
+// Not __thread: on Vita the emutls slot of the game thread turned out to alias the prep thread's (the game
+// thread then ran prep_call work inline, racing the prep thread). Identified by thread id instead.
+static volatile SDL_threadID prep_tid;
+static volatile int pumping;
+static inline int on_prep(void) { return pumping || (prep_tid && SDL_ThreadID() == prep_tid); }
 static uint32_t prev_present_pos;
 static uint64_t st_rec, st_inl, st_lockw, st_lockw_t, st_fullw, st_ibytes, st_busy, st_idle;
 
@@ -102,16 +107,16 @@ static int consume_all(void) {
     return any;
 }
 static void pump(void) {
-    int was = on_prep;
-    on_prep = 1;
+    int was = pumping;
+    pumping = 1;
     consume_all();
-    on_prep = was;
+    pumping = was;
 }
 static inline uint64_t now(void) { return SDL_GetPerformanceCounter(); }
 static int prep_thread(void *arg) {
     (void)arg;
     rt_cpu_profile_thread("prepare");
-    on_prep = 1;
+    prep_tid = SDL_ThreadID();
 #ifdef __vita__
     sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_2);
 #endif
@@ -417,7 +422,7 @@ void prep_free(int kind, void *p) {
     prep_gdrain();
 }
 void prep_call(void (*fn)(void *), void *arg) {
-    if (on_prep) { fn(arg); return; }
+    if (on_prep()) { fn(arg); return; }
     uint32_t *r = rec_begin(R_CALL, 5);
     putp(r + 1, (void *)(uintptr_t)fn); putp(r + 3, arg);
     rec_commit(5);

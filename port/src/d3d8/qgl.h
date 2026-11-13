@@ -90,6 +90,8 @@ void q_glFramebufferRenderbuffer(GLenum, GLenum, GLenum, GLuint);
 #define glGenTextures(...) (q_sync("glGenTextures"), glGenTextures(__VA_ARGS__))
 #define glGenBuffers(...) (q_sync("glGenBuffers"), glGenBuffers(__VA_ARGS__))
 #define glTexImage2D(...) (q_sync("glTexImage2D"), glTexImage2D(__VA_ARGS__))
+// In-place updates too: called directly, it lands in whatever texture the render thread bound last (G13 path)
+#define glTexSubImage2D(...) (q_sync("glTexSubImage2D"), glTexSubImage2D(__VA_ARGS__))
 #define glCompressedTexImage2D(...) (q_sync("glCompressedTexImage2D"), glCompressedTexImage2D(__VA_ARGS__))
 #define glReadPixels(...) (q_sync("glReadPixels"), glReadPixels(__VA_ARGS__))
 #define glCheckFramebufferStatus(...) (q_sync("glCheckFramebufferStatus"), glCheckFramebufferStatus(__VA_ARGS__))

@@ -441,12 +441,20 @@ K(WaitForMultipleObjects) {
     STDRET(4, r);
 }
 
-__thread Thread *w32_tl_self;
+// Guest threads by CPU, for GetCurrentThread(): not __thread (Vita emutls slots alias between threads).
+static Thread *thr_tab[64];
+static int thr_n;
+Thread *w32_thread_of_cpu(const CPU *c) {   // NULL for the main thread
+    Thread *r = NULL;
+    SDL_LockMutex(g_sync);
+    for (int i = 0; i < thr_n && !r; i++) if (thr_tab[i]->c == c) r = thr_tab[i];
+    SDL_UnlockMutex(g_sync);
+    return r;
+}
 static int thread_main(void *p) {
     rt_cpu_profile_thread("guest");
     Thread *t = p;
     HOSTFN;
-    w32_tl_self = t;
     W32(t->c->fs_base + 0x24, t->tid);
     SDL_LockMutex(g_sync);
     while (t->susp > 0) SDL_CondWait(g_sync_cv, g_sync);   // CREATE_SUSPENDED: wait for ResumeThread
@@ -469,6 +477,10 @@ K(CreateThread) {
     if (ARG(5) & 4) t->susp = 1;   // CREATE_SUSPENDED
     if (ARG(6)) W32(ARG(6), t->tid);
     uint32_t h = h_new(H_THREAD, t);
+    SDL_LockMutex(g_sync);
+    if (thr_n < 64) thr_tab[thr_n++] = t;
+    else rt_log("[thread] WARN: more than 64 guest threads, GetCurrentThread() not tracked for tid=%u\n", t->tid);
+    SDL_UnlockMutex(g_sync);
     rt_log("CreateThread start=%08x param=%08x tid=%u\n", t->start, t->param, t->tid);
     t->t = SDL_CreateThread(thread_main, "guest", t);
     STDRET(6, h);

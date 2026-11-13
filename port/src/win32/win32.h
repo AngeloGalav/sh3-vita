@@ -15,7 +15,7 @@ extern SDL_mutex *g_sync;
 extern SDL_cond *g_sync_cv;
 typedef struct { int manual, state; unsigned gen; } Event;   // gen: PulseEvent generation (releases the threads that are waiting at that moment)
 typedef struct { SDL_Thread *t; CPU *c; uint32_t start, param, tid; int done; int susp; } Thread;   // susp: suspend count (guest SuspendThread/ResumeThread, CREATE_SUSPENDED)
-extern __thread Thread *w32_tl_self;
+Thread *w32_thread_of_cpu(const CPU *c);   // current guest thread (GetCurrentThread); NULL for the main thread
 int w32_signaled(uint32_t h);        // under g_sync
 void w32_consume(uint32_t h);        // under g_sync: resets an auto event
 uint32_t w32_wait(uint32_t n, const uint32_t *hs, int all, uint32_t timeout_ms);
