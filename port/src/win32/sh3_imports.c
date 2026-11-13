@@ -152,7 +152,21 @@ U(ChangeDisplaySettingsA) { STDRET(2, 0); }   // DISP_CHANGE_SUCCESSFUL
 U(ClipCursor) { STDRET(1, 1); }
 U(DrawTextA) { STDRET(5, 0); }
 U(DrawTextW) { STDRET(5, 0); }
-U(EnumDisplaySettingsA) { HOSTFN; STDRET(3, 0); }
+// The Options > Configuration "Resolution" list (FUN_005e2300) keeps only the D3D modes that EnumDisplaySettingsA
+// also lists; a failure at index 0 left that list uninitialised (garbage "-1960902656x32574" on the row).
+// Report the 4:3 modes of the d3d8 shim's EnumAdapterModes (960x544 is not 4:3 and the game filters it anyway).
+U(EnumDisplaySettingsA) {
+    HOSTFN;
+    static const uint32_t m[][2] = {{640, 480}, {800, 600}, {1024, 768}};
+    uint32_t i = ARG(2), p = ARG(3);
+    if (i == 0xffffffffu) i = 2;   // ENUM_CURRENT_SETTINGS: the d3d8 shim's GetAdapterDisplayMode (1024x768)
+    if (i >= 3 || !p) STDRET(3, 0);
+    memset(mb + p + 0x26, 0, 0x9c - 0x26);   // keep dmDeviceName/dmSpecVersion/dmSize as the caller set them
+    W16(p + 0x24, 0x9c);
+    W32(p + 0x28, 0x00040000u | 0x00080000u | 0x00100000u | 0x00400000u);   // BITSPERPEL | PELSWIDTH | PELSHEIGHT | DISPLAYFREQUENCY
+    W32(p + 0x68, 32); W32(p + 0x6c, m[i][0]); W32(p + 0x70, m[i][1]); W32(p + 0x78, 60);
+    STDRET(3, 1);
+}
 U(FindWindowA) { STDRET(2, 0); }
 U(GetClassLongA) { STDRET(2, 0); }
 U(GetKeyState) { STDRET(1, 0); }

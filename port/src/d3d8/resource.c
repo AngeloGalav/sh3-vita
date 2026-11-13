@@ -386,7 +386,53 @@ Texture *tex_create(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uin
     return t;
 }
 
+// Texture quality, a player option (SH3: "Textures" line in the Options menu, see texq_menu.c).
+// 0 = performance: the historical Vita storage (565 opaque, 4444 for alpha formats above 256 px);
+// 1 = balanced: 565 only for textures whose texels are all opaque, RGBA8 for the rest up to 512 px;
+// 2 = high: RGBA8 everywhere, no 16-bit reduction. Only the Vita path (and SH4_PC_VITA_TEX) has 16-bit
+// storage; the PC build always stores RGBA8. A change re-uploads every texture whose guest copy is still
+// there (textures released by SH3_TEXFREE keep their format until the game reloads them).
+#ifdef SH3_PORT
+#define TEXQ_DEFAULT 1
+#else
+#define TEXQ_DEFAULT 0   // SH4 keeps its qualified storage
+#endif
+static volatile int g_texq = -1;
+static volatile uint32_t g_texq_gen = 1;
+int texq_get(void) {
+    int q = __atomic_load_n(&g_texq, __ATOMIC_RELAXED);
+    if (q < 0) {
+        const char *e = getenv("SH3_TEXQ");
+#ifdef SH3_PORT
+        int texq_ini_value(void);   // sh3port.ini, written by the Options > Configuration "Textures" row
+        int saved = e ? -1 : texq_ini_value();
+        q = e ? atoi(e) : saved >= 0 ? saved : TEXQ_DEFAULT;
+#else
+        q = e ? atoi(e) : TEXQ_DEFAULT;
+#endif
+        if (q < 0 || q > 2) q = TEXQ_DEFAULT;
+        int expect = -1;
+        __atomic_compare_exchange_n(&g_texq, &expect, q, 0, __ATOMIC_RELAXED, __ATOMIC_RELAXED);
+        q = __atomic_load_n(&g_texq, __ATOMIC_RELAXED);
+    }
+    return q;
+}
+void texq_set(int q) {
+    if (q < 0 || q > 2 || q == texq_get()) return;
+    __atomic_store_n(&g_texq, q, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&g_texq_gen, 1, __ATOMIC_RELEASE);
+    rt_log("[texq] texture quality -> %d (%s)\n", q, q == 0 ? "performance" : q == 1 ? "balanced" : "high");
+}
+
 GLuint tex_gl(Texture *t) {
+    uint32_t qgen = __atomic_load_n(&g_texq_gen, __ATOMIC_ACQUIRE);
+    if (t->q_gen != qgen) {   // quality changed since this texture was stored: rebuild it from its guest copy
+        if (t->gl && t->tfmt && !(t->usage & 1) && !t->movie && !t->freed) {
+            t->tfmt = 0;
+            __atomic_fetch_or(&t->dirty, 0xffffffffu, __ATOMIC_RELAXED);
+        }
+        t->q_gen = qgen;
+    }
     if (!t->gl) {
         rt_log("[rt] tex_gl %ux%u lv=%u usage=%u fmt=%u\n", t->w, t->h, t->levels, t->usage, t->fmt);
         glGenTextures(1, &t->gl);
@@ -546,7 +592,8 @@ void tex_upload(Texture *t, int l) {
         direct_dxt1=enabled&&!strcmp(enabled,"1")&&!(rgba&&!strcmp(rgba,"1"));
 #endif
     }
-    if(direct_dxt1 && t->fmt==FMT_DXT1 && (!t->tfmt || t->tfmt==1)) {
+    int texq = texq_get();
+    if(direct_dxt1 && texq < 2 && t->fmt==FMT_DXT1 && (!t->tfmt || t->tfmt==1)) {
         uint16_t *packed=malloc((size_t)w*h*2);
         if(packed) {
             sh4_dxt1_rgb565(src,packed,w,h);
@@ -574,7 +621,9 @@ void tex_upload(Texture *t, int l) {
     }
 #if defined(__vita__) || defined(SH4_PC_VITA_TEX)
     int alpha = fmt_is_dxt(t->fmt) ? t->fmt != FMT_DXT1 : t->fmt == FMT_A8R8G8B8 || t->fmt == FMT_A1R5G5B5 || t->fmt == FMT_A4R4G4B4 || t->fmt == FMT_A8 || t->fmt == FMT_A8L8;
-    if (alpha && fmt_is_dxt(t->fmt)) { uint8_t m = 255; for (uint32_t i = 0; i < w * h; i++) m &= tmp[4 * i + 3]; if (m == 255) alpha = 0; }   // alpha format but opaque: 565 keeps more colour
+    // alpha format but opaque: 565 keeps more colour. Balanced/high also test uncompressed formats (SH3's
+    // rooms are 512x512 A8R8G8B8, which the performance level stores as 4444).
+    if (alpha && (fmt_is_dxt(t->fmt) || texq >= 1) && (gl_l == 0 || !t->tfmt)) { uint8_t m = 255; for (uint32_t i = 0; i < w * h; i++) m &= tmp[4 * i + 3]; if (m == 255) alpha = 0; }
     // Preserve alpha precision separately from opaque texture storage. Laboratory
     // SH4_ALPHA32_MAX=512 raises only this threshold, unlike global TEX32.
     // The normal threshold remains 256; ALPHA16 still takes precedence.
@@ -588,7 +637,12 @@ void tex_upload(Texture *t, int l) {
     }
     if (a16 < 0) a16 = getenv("SH4_ALPHA16") != NULL;
     if (tex32 < 0) { const char *e = getenv("SH4_TEX32"); tex32 = e && !strcmp(e,"1"); }
-    if (gl_l == 0 || !t->tfmt) t->tfmt = tex32 ? 3 : !alpha ? 1 : (!a16 && w <= alpha32_max && h <= alpha32_max) ? 3 : 2;
+    if (gl_l == 0 || !t->tfmt) {
+        unsigned amax = texq >= 1 && alpha32_max < 512 ? 512 : alpha32_max;
+        int was = t->tfmt;
+        t->tfmt = tex32 || texq == 2 ? 3 : !alpha ? 1 : (!a16 && w <= amax && h <= amax) ? 3 : 2;
+        if (t->tfmt != was && !t->movie) rt_log("[texq] %ux%u fmt=%u q=%d -> %s\n", w, h, t->fmt, texq, t->tfmt == 1 ? "rgb565" : t->tfmt == 2 ? "rgba4444" : "rgba8");
+    }
     alpha = t->tfmt != 1;   // every level of a texture shares level 0's format
     if (t->tfmt == 3) {
         glTexImage2D(g_up_target, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);

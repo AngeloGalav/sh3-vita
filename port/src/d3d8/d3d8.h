@@ -78,7 +78,10 @@ struct Texture {
     uint32_t cand_locks;   // free-after-upload: lock count when it became a candidate (texfree, game thread only)
     unsigned cand_frame;
     int cand, freed, keep; // in the candidate list / guest copies released / never release (relocked after a release)
+    uint32_t q_gen;        // texture-quality generation this texture was stored with (texq_set)
 };
+int texq_get(void);                  // texture quality 0..2 (resource.c)
+void texq_set(int q);
 void texfree_unlocked(Texture *t);   // free-after-upload (SH3_TEXFREE=1): candidate after an unlock
 void texfree_present(void);          // once per Present, game thread
 void texfree_locking(Texture *t);    // before a lock: count it, detect a relock after release
