@@ -897,6 +897,7 @@ M(ctl, Run) {
 M(ctl, Pause) { HOSTFN; MV; m->state = 1; if (m->renderer) gcall(c, m->renderer, 5, 0); STDRET(1, HR_OK); }
 M(ctl, Stop) {
     HOSTFN; MV;
+    { extern unsigned g_frame; rt_log("[movie-stop] frame=%u\n", g_frame); }
     m->stop = 1;
     if (m->thread) { SDL_WaitThread(m->thread, NULL); m->thread = NULL; }
     if (m->othread) { SDL_WaitThread(m->othread, NULL); m->othread = NULL; }
@@ -1118,6 +1119,10 @@ static uint32_t movie_open_source(Movie *m, const char *host) {
     plm_buffer_t *fb = movie_input(m, host, 0);
     m->plm = fb ? plm_create_with_buffer(fb, TRUE) : NULL;
     rt_log("[movie] source \"%s\" -> %s\n", host, m->plm ? "ok" : "FAILED");
+#ifdef SH3_PORT
+    { extern unsigned g_frame; uint8_t *mb = g_mem;   // SH3: which table entry (0x710c48, stride 8) the game asked for
+      rt_log("[movie-game] frame=%u index=%d state=%u\n", g_frame, (int)(int32_t)R32(0xbc93b0), R32(0xbc93b4)); }
+#endif
     if (!m->plm) return VFW_E_NOT_FOUND;
     plm_set_loop(m->plm, 0);
     plm_set_audio_enabled(m->plm, 0);

@@ -75,9 +75,50 @@ static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
     c->esp = sp;
 }
 
+// Test only (host): SH3_MOVIE_TEST="frame:index[,frame:index...]" plays an entry of the game's movie table (0x710c48, stride 8:
+// 1 op, 2 muxx, 3 huxx, 5 henshin, 6 ed_n, 7 ed_u, 8 ed_b) through the game's own movie mode (0xc), from the title screen.
+// The title returns mode code 7 (its "attract movie" case, which starts index 1); the next input poll restarts it with `index`.
+static int mt_idx = -1, mt_armed;
+// Test only: SH3_MOVIE_GAME="frame:index:count:table_hex[,...]" calls the game's own movie start (FUN_004bafd0, as its event scripts do:
+// index, subtitle-entry count, subtitle table) from wherever the game is, and with SH3_MOVIE_GAME_FLAG=1 raises the flag the ending scripts raise (0x715d0cc bit 26).
+static void movie_test_game(CPU *c) {
+    HOSTFN;
+    static const char *spec; static int init;
+    extern unsigned g_frame;
+    if (!init) { init = 1; spec = getenv("SH3_MOVIE_GAME"); }
+    unsigned f, a, b; int idx, used = 0;
+    if (!spec || sscanf(spec, "%u:%d:%u:%x%n", &f, &idx, &a, &b, &used) != 4 || g_frame < f) return;
+    spec += used; if (*spec == ',') spec++;
+    rt_log("[movie-test] frame %u: FUN_004bafd0(%d, %u, 0x%x) from the running game\n", g_frame, idx, a, b);
+    rt_guest_call(c, 0x4bafd0, 3, (uint32_t)idx, a, b);
+    if (getenv("SH3_MOVIE_GAME_FLAG")) W32(0x715d0cc, R32(0x715d0cc) | 0x4000000u);   // ending movies only (ed_*): the ending scripts raise it
+}
+void sh3_movie_test_poll(CPU *c) {
+    movie_test_game(c);
+    if (!mt_armed) return;
+    mt_armed = 0;
+    rt_log("[movie-test] starting table index %d\n", mt_idx);
+    rt_guest_call(c, 0x59c9c0, 3, (uint32_t)mt_idx, 0, 0);
+}
+static int movie_test_title(CPU *c) {
+    HOSTFN;
+    static const char *spec; static int init;
+    extern unsigned g_frame;
+    if (!init) { init = 1; spec = getenv("SH3_MOVIE_TEST"); }
+    unsigned f; int idx, used = 0;
+    if (!spec || sscanf(spec, "%u:%d%n", &f, &idx, &used) != 2 || g_frame < f) return 0;
+    spec += used; if (*spec == ',') spec++;
+    mt_idx = idx; mt_armed = 1;
+    rt_log("[movie-test] frame %u: title -> movie mode, index %d\n", g_frame, idx);
+    c->eax = 7;
+    c->esp += 4;   // ret
+    return 1;
+}
+
 // FUN_005d8e80 wrapper (no arguments, returns the title's next-mode code; 0 = stay)
 void nat_title_mode(CPU *c) {
     HOSTFN;
+    if (movie_test_title(c)) return;
     if (credits_done < 0) credits_done = getenv("SH3_NO_CREDITS") != NULL;
     if (credits_done) { F_005d8e80_orig(c); return; }
     uint32_t now = SDL_GetTicks();

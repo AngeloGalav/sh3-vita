@@ -190,6 +190,9 @@ M(dev, GetDeviceState) {
         int nk;
         const Uint8 *ks = SDL_GetKeyboardState(&nk);
         init_dik();
+#ifdef SH3_PORT
+        { extern void sh3_movie_test_poll(CPU *); sh3_movie_test_poll(c); }   // SH3_MOVIE_TEST / SH3_MOVIE_GAME hooks (sh3_port_ui.c)
+#endif
         for (int i = 0; i < nk && i < SDL_NUM_SCANCODES; i++)
             if (ks[i] && dik_of[i] && dik_of[i] < n) W8(p + dik_of[i], 0x80);
         // Automated test: SH4_INPUT="frame:DIK[:duration],..." (DIK in hexadecimal), e.g. "900:1c,960:c8:2"
@@ -282,6 +285,13 @@ M(dev, GetDeviceState) {
             while (*s && *s != ',') s++;
             if (*s == ',') s++;
         }
+        {   // While a movie plays, confirm skips it like Esc (the game's keyboard skip): armed once confirm has been released after the movie started,
+            // so the press that chose "New Game" cannot skip the opening.
+            static int armed;
+            if (!g_movie_w) armed = 0;
+            else if (!R8(p + 0x1c)) armed = 1;
+            else if (armed && 0x01 < n) W8(p + 0x01, 0x80);
+        }
         rt_audit_input(c, p, n);
     } else if (self->type == 2 && self->gc) {
         SDL_GameController *g = self->gc;
@@ -320,6 +330,27 @@ M(dev, GetDeviceState) {
         // Pause = the two input-active flags 0x5ff2d8 / 0xec7664 are both zero (they stay 1 in normal play, phone and window view; found with dump_diff.py).
         int ui = world == 0 || (gw[0x5ff2d8 / 4] == 0 && gw[0xec7664 / 4] == 0);
         int stickmode = cur || menu || ui;   // sticks do not drive the character
+#ifndef __vita__
+        {   // test only: SH3_VPAD_IN="frame:SDL_GameControllerButton(decimal)[:duration],..." drives the virtual controller (SH3_VPAD=1)
+            static const char *vin;
+            if (!vin) vin = getenv("SH3_VPAD_IN") ? getenv("SH3_VPAD_IN") : "";
+            SDL_Joystick *vj = SDL_GameControllerGetJoystick(g);
+            for (int b = 0; vj && b < 16; b++) {
+                int down = 0;
+                for (const char *q = vin; *q;) {
+                    unsigned f = 0, k = 0, dur = 3; int used = 0;
+                    if (sscanf(q, "%u:%u%n", &f, &k, &used) < 2) break;
+                    q += used;
+                    if (*q == ':') { q++; dur = (unsigned)strtoul(q, (char **)&q, 10); }
+                    if ((int)k == b && g_frame >= f && g_frame < f + dur) down = 1;
+                    while (*q && *q != ',') q++;
+                    if (*q == ',') q++;
+                }
+                SDL_JoystickSetVirtualButton(vj, b, down);
+            }
+            SDL_JoystickUpdate();
+        }
+#endif
         const Sh4PadSample *physical = sh4_pad_sample(&self->sample, g, g_frame);
         unsigned raw_buttons = physical->buttons;
 #ifdef SH4_TEST_OPTIMIZATIONS
@@ -421,6 +452,12 @@ M(dev, GetDeviceState) {
         static Sh4PadButtons button_state;
         int button_context = menu ? SH4_PAD_OPTIONS : cur ? SH4_PAD_POINTER : SH4_PAD_GAMEPLAY;
         unsigned mapped = sh4_pad_buttons(&button_state, raw_buttons, button_context, combos);
+        {   // While a movie plays, confirm (button 2, Cross) also acts as the game's skip button (8, Start); same arming as the keyboard.
+            static int armed;
+            if (!g_movie_w) armed = 0;
+            else if (!(mapped & 4u)) armed = 1;
+            else if (armed) mapped |= 1u << 8;
+        }
         for (int i = 0; i < 12 && 48u + (uint32_t)i < n; i++) {
             if (mapped & (1u << i)) W8(p + 48 + (uint32_t)i, 0x80);
         }
@@ -521,6 +558,18 @@ M(di, EnumDevices) {
     if (!want_pad || getenv("SH4_NOPAD")) STDRET(5, HR_OK);
     uint32_t inst = gheap_calloc(580);
     if (!inst) STDRET(5, 0x8007000eu);
+#ifndef __vita__
+    {   // Test only (host): SH3_VPAD=1 attaches a virtual SDL game controller, pressed by SH3_VPAD_IN="frame:SDL_button[:duration],..."
+        static int vpad_done; static int vidx = -1;
+        if (!vpad_done && getenv("SH3_VPAD") && SDL_NumJoysticks() == 0) {
+            vpad_done = 1;
+            SDL_InitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
+            SDL_JoystickAttachVirtual(SDL_JOYSTICK_TYPE_GAMECONTROLLER, 6, 16, 1);
+            vidx = 0;
+            rt_log("[vpad] virtual controller attached, joysticks=%d game_controller=%d\n", SDL_NumJoysticks(), SDL_NumJoysticks() ? SDL_IsGameController(0) : -1);
+        }
+    }
+#endif
     for (int i = 0; i < SDL_NumJoysticks(); i++) {
         if (!SDL_IsGameController(i)) continue;
         memset(mb + inst, 0, 580);
