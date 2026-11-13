@@ -24,6 +24,7 @@ void prep_call(void (*fn)(void *), void *arg);                   // runs fn on t
 void prep_vsdel(uint32_t h);
 void prep_psdel(uint32_t h);
 void prep_use(uint32_t *use);                                    // marks the resource "used by the records issued so far"
+int prep_use_done(uint32_t use);                                 // non-blocking: consumer already past `use`
 void prep_wait_use(uint32_t use);                                // before writing a resource's memory
 void prep_wait_all(void);
 void prep_report(double frames);                                 // SH4_STATS

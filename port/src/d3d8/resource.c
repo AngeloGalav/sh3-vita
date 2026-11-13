@@ -199,6 +199,7 @@ M(surf, LockRect) {
     if (self->tex) {
         Texture *t = self->tex;
         prep_wait_use(t->use);
+        texfree_locking(t);
         uint32_t lw = t->w >> self->level ? t->w >> self->level : 1;
         STDRET(4, lock_rect(surf_mem(self), t->fmt, lw, ARG(2), ARG(3)));
     } else {
@@ -209,7 +210,7 @@ M(surf, LockRect) {
 }
 M(surf, UnlockRect) {
     HOSTFN; THIS(Surface, K_SURFACE);
-    if (self->tex) __atomic_fetch_or(&self->tex->dirty, 1u << self->level, __ATOMIC_RELAXED);
+    if (self->tex) { __atomic_fetch_or(&self->tex->dirty, 1u << self->level, __ATOMIC_RELAXED); texfree_unlocked(self->tex); }
     STDRET(1, HR_OK);
 }
 const gfn surf_vt[] = {surf_QueryInterface, surf_AddRef, surf_Release, surf_GetDevice, surf_SetPrivateData,
@@ -250,11 +251,13 @@ M(tex, LockRect) {
     if (l >= self->levels) STDRET(5, D3DERR_INVALIDCALL);
     uint32_t w = self->w >> l;
     prep_wait_use(self->use);
+    texfree_locking(self);
     STDRET(5, lock_rect(surf_mem(self->lv[l]), self->fmt, w ? w : 1, ARG(3), ARG(4)));
 }
 M(tex, UnlockRect) {
     HOSTFN; THIS(Texture, K_TEXTURE);
     if (ARG(2) < 32) __atomic_fetch_or(&self->dirty, 1u << ARG(2), __ATOMIC_RELAXED);
+    texfree_unlocked(self);
     STDRET(2, HR_OK);
 }
 // The game writes the movie frame through the LockRect pointer and only signals AddDirtyRect (never UnlockRect).
@@ -295,6 +298,7 @@ M(cube, LockRect) {
     uint32_t f = ARG(2), l = ARG(3);
     if (f > 5 || l >= self->levels) STDRET(6, D3DERR_INVALIDCALL);
     uint32_t w = self->edge >> l;
+    texfree_locking(self->face[f]);
     STDRET(6, lock_rect(surf_mem(self->face[f]->lv[l]), self->fmt, w ? w : 1, ARG(4), ARG(5)));
 }
 M(cube, UnlockRect) {
@@ -860,6 +864,7 @@ void d3d_release(ComObj *o) {
         if (g_dev)
             for (int s = 0; s < MAX_STAGES; s++)
                 if (g_dev->tex[s] == t) return; // still bound (should not happen: SetTexture does AddRef)
+        texfree_forget(t);
         prep_free(K_TEXTURE, t);
         break;
     }
@@ -915,5 +920,53 @@ void res_free(int kind, void *p) {
         break;
     }
     default: break;
+    }
+}
+
+// ---------- free-after-upload of guest texture copies (SH3_TEXFREE=1, experimental) ----------
+// The guest copy of a MANAGED, non-render-target texture is only needed to (re)upload it: SH3 does not read textures
+// back (J4 census). Once the render side has replayed every record that used the texture (prep_use_done), nothing is
+// dirty and the game has not locked it again for 2 presents, the copies of all levels are released on the game
+// thread. A later lock gets fresh zeroed memory: logged, and the texture is then kept forever.
+static Texture **tf_list; static unsigned tf_n, tf_cap; static int tf_on = -1; static unsigned tf_frame;
+static uint64_t tf_freed_bytes; static unsigned tf_freed_tex, tf_relocks;
+static int texfree_enabled(void) { if (tf_on < 0) tf_on = getenv("SH3_TEXFREE") && !strcmp(getenv("SH3_TEXFREE"), "1"); return tf_on; }
+void texfree_locking(Texture *t) {
+    t->locks++;
+    if (t->freed) {
+        t->freed = 0; t->keep = 1; tf_relocks++;
+        rt_log("[texfree] relock after release: %ux%u fmt=%u levels=%u (kept from now on, %u relocks)\n", t->w, t->h, t->fmt, t->levels, tf_relocks);
+    }
+}
+void texfree_unlocked(Texture *t) {
+    if (!texfree_enabled() || t->cand || t->keep || t->pool != 1 || (t->usage & 1) || t->movie) return;
+    if (tf_n == tf_cap) { tf_cap = tf_cap ? tf_cap * 2 : 256; tf_list = realloc(tf_list, tf_cap * sizeof *tf_list); }
+    tf_list[tf_n++] = t; t->cand = 1; t->cand_locks = t->locks; t->cand_frame = tf_frame;
+}
+void texfree_forget(Texture *t) {
+    if (!t->cand) return;
+    for (unsigned i = 0; i < tf_n; i++) if (tf_list[i] == t) { tf_list[i] = tf_list[--tf_n]; break; }
+    t->cand = 0;
+}
+void texfree_present(void) {
+    tf_frame++;
+    if (!texfree_enabled()) return;
+    for (unsigned i = 0; i < tf_n;) {
+        Texture *t = tf_list[i];
+        if (t->locks != t->cand_locks) { t->cand_locks = t->locks; t->cand_frame = tf_frame; i++; continue; }
+        if (tf_frame - t->cand_frame < 2 || __atomic_load_n(&t->dirty, __ATOMIC_ACQUIRE) || !__atomic_load_n(&t->gl, __ATOMIC_ACQUIRE)
+            || !prep_use_done(t->use) || t->movie) { i++; continue; }
+        uint64_t bytes = 0;
+        for (uint32_t l = 0; l < t->levels; l++) {
+            Surface *s = t->lv[l];
+            if (!s->mem || s->pending) continue;
+            uint32_t size = fmt_level_size(s->fmt, s->w, s->h);
+            gheap_free(s->mem); s->mem = 0; g_mem_tex -= size; bytes += size;
+        }
+        t->freed = 1; t->cand = 0; tf_list[i] = tf_list[--tf_n];
+        tf_freed_bytes += bytes; tf_freed_tex++;
+        if (tf_freed_tex <= 3 || tf_freed_tex % 100 == 0)
+            rt_log("[texfree] released %ux%u fmt=%u (%llu KB); total %u textures, %llu KB\n", t->w, t->h, t->fmt,
+                   (unsigned long long)(bytes >> 10), tf_freed_tex, (unsigned long long)(tf_freed_bytes >> 10));
     }
 }

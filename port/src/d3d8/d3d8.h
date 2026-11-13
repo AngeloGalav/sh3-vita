@@ -74,7 +74,15 @@ struct Texture {
     int tfmt;              // Vita: GL format of the whole mip chain, fixed by level 0 (1 = 565, 2 = 4444, 3 = RGBA8): vitaGL mixes up levels of different formats
     int stg_alloc;         // movie (Vita): GL 565 storage exists (565 frames come from movie_565_take)
     uint32_t use;          // ring position (prep.c) of the last record that reads/writes this texture
+    uint32_t locks;        // LockRect count (game thread)
+    uint32_t cand_locks;   // free-after-upload: lock count when it became a candidate (texfree, game thread only)
+    unsigned cand_frame;
+    int cand, freed, keep; // in the candidate list / guest copies released / never release (relocked after a release)
 };
+void texfree_unlocked(Texture *t);   // free-after-upload (SH3_TEXFREE=1): candidate after an unlock
+void texfree_present(void);          // once per Present, game thread
+void texfree_locking(Texture *t);    // before a lock: count it, detect a relock after release
+void texfree_forget(Texture *t);     // texture being released
 extern int g_movie_w, g_movie_h;
 uint16_t *movie_565_take(uint32_t w, uint32_t h, volatile int **busy);   // movie.c (Vita)
 

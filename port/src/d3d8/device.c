@@ -73,7 +73,7 @@ static void memcrc_maybe(void) {
                g_mem[a], g_mem[a + 1], g_mem[a + 2], g_mem[a + 3]);
     }
 }
-M(Present) { memcrc_maybe();
+M(Present) { memcrc_maybe(); texfree_present();
     HOSTFN; DEV;
     if (g_t_begin) g_t_body += SDL_GetPerformanceCounter() - g_t_begin;
     g_t_begin = 0;

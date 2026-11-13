@@ -1432,6 +1432,7 @@ void surf_copy_rects(Surface *src, uint32_t rects, uint32_t n, Surface *dst, uin
     SLOW("copy_rects", src->w, dst->w);
     HOSTFN;
     uint64_t t_cp = SDL_GetPerformanceCounter();
+    if (dst->tex) { texfree_locking(dst->tex); dst->tex->keep = 1; }   // copy destinations keep their guest copy (texfree)
     if (src->pending) surf_flush_pending(src);
     if (dst->pending) { d3d_release(&dst->pending->com); dst->pending = NULL; }
     if (surf_is_gl(src) && !surf_is_gl(dst) && !dst->tex && !dst->mem && n <= 1 && !points && src->w == dst->w &&
