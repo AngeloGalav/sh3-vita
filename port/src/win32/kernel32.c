@@ -690,11 +690,17 @@ static uint32_t read_direct(FILE *fp, uint8_t *dst, uint32_t n, int *error) {
     *error = 0;
     errno = 0;
 #ifdef __vita__
+    // The raw read() below starts at the descriptor's offset, not at the FILE's logical position. An fseek to the
+    // current position is NOT enough to sync them: newlib satisfies an in-buffer fseek by moving its buffer pointer
+    // only, leaving the descriptor wherever the last buffer refill left it. SH3 mixes buffered reads and these
+    // direct reads on the same handle; on Vita3K the first msg.arc read then returned bytes from the wrong offset
+    // (garbage font header -> invalid glyph reads -> black screen). So: discard the buffer and seek the
+    // descriptor explicitly.
     long pos = ftell(fp);
-    if (pos < 0 || fseek(fp, pos, SEEK_SET)) {
+    if (pos < 0 || fflush(fp) || lseek(fileno(fp), (off_t)pos, SEEK_SET) != (off_t)pos) {
         *error = errno ? errno : EIO;
         return 0;
-    } // drops the stdio buffer before direct descriptor access
+    }
     uint32_t got = 0;
     while (got < n) {
         errno = 0;
@@ -708,7 +714,8 @@ static uint32_t read_direct(FILE *fp, uint8_t *dst, uint32_t n, int *error) {
         got += (uint32_t)r;
     }
     errno = 0;
-    if (fseek(fp, pos + (long)got, SEEK_SET) && !*error)
+    // stdio's cached offset is stale after the raw read: an empty buffer and an absolute seek put it back in step
+    if ((fflush(fp) || fseek(fp, pos + (long)got, SEEK_SET)) && !*error)
         *error = errno ? errno : EIO;
     return got;
 #else

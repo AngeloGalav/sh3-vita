@@ -79,6 +79,7 @@ struct Texture {
     unsigned cand_frame;
     int cand, freed, keep; // in the candidate list / guest copies released / never release (relocked after a release)
     uint32_t q_gen;        // texture-quality generation this texture was stored with (texq_set)
+    uint32_t gl_alloc, alloc_key, ups;   // G13: GL levels with storage of format alloc_key (re-uploads use glTexSubImage2D); level-0 upload count
 };
 int texq_get(void);                  // texture quality 0..2 (resource.c)
 void texq_set(int q);

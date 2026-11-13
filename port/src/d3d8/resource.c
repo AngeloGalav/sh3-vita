@@ -436,6 +436,7 @@ GLuint tex_gl(Texture *t) {
     if (!t->gl) {
         rt_log("[rt] tex_gl %ux%u lv=%u usage=%u fmt=%u\n", t->w, t->h, t->levels, t->usage, t->fmt);
         glGenTextures(1, &t->gl);
+        t->gl_alloc = 0;
         glBindTexture(GL_TEXTURE_2D, t->gl);
 #ifndef __vita__
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, (GLint)t->levels - 1);
@@ -472,6 +473,38 @@ GLuint tex_gl(Texture *t) {
 }
 
 static void free_p(void *p) { free(*(void **)p); }
+
+// G13: SH3 rewrites a few small textures every frame (the 128x128 noise/grain layers, DXT5 and A8R8G8B8: two
+// uploads per frame in the first room). Re-specifying them with glTexImage2D makes vitaGL allocate new storage
+// each time; a level that already has storage of the same size and format is updated in place with
+// glTexSubImage2D instead (the path the Vita movie upload already uses). SH3_TEXSUB=0 restores the old calls;
+// SH4 builds keep them unless SH3_TEXSUB=1.
+static int tex_sub_on(void) {
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("SH3_TEXSUB");
+#ifdef SH3_PORT
+        on = !e || strcmp(e, "0");
+#else
+        on = e && !strcmp(e, "1");
+#endif
+    }
+    return on;
+}
+static void up_image(Texture *t, int gl_l, GLint ifmt, GLsizei w, GLsizei h, GLenum fmt, GLenum type, const void *px) {
+    uint32_t bit = 1u << (gl_l < 31 ? gl_l : 31), key = (uint32_t)ifmt << 16 ^ (uint32_t)type;
+    if (key != t->alloc_key) t->gl_alloc = 0, t->alloc_key = key;
+    static unsigned n_sub, n_full;
+    if (tex_sub_on() && (t->gl_alloc & bit)) {
+        glTexSubImage2D(g_up_target, gl_l, 0, 0, w, h, fmt, type, px);
+        if (!(++n_sub % 3000)) rt_log("[tex] in-place updates %u, full uploads %u\n", n_sub, n_full);
+        return;
+    }
+    glTexImage2D(g_up_target, gl_l, ifmt, w, h, 0, fmt, type, px);
+    t->gl_alloc |= bit;
+    n_full++;
+}
+
 void tex_upload(Texture *t, int l) {
     SLOW("tex_upload", t->w, l);
     Surface *s = t->lv[l];
@@ -498,7 +531,10 @@ void tex_upload(Texture *t, int l) {
         rt_log("[audit-format] selected mip has no data: texture=%ux%u fmt=%u level=%d\n", t->w, t->h, t->fmt, l);
 #endif
 #endif
-    if (!t->movie) rt_log("[tex] upload %ux%u fmt=%u lv=%d\n", w, h, t->fmt, l);
+    if (l == 0 && t->ups < 0xffffffffu) t->ups++;
+    // the first uploads of each texture only: the per-frame layers would otherwise add two lines per frame
+    if (!t->movie && t->ups <= 2) rt_log("[tex] upload %ux%u fmt=%u lv=%d\n", w, h, t->fmt, l);
+    else if (!t->movie && t->ups == 3 && l == 0) rt_log("[tex] %ux%u fmt=%u is rewritten repeatedly: further uploads not logged\n", w, h, t->fmt);
     // PC: hardware DXT (SH4_SWDXT=1 forces the CPU). Vita keeps software
     // decoding by default. SH4_HWDXT=1 is a lab option: the usual vitaGL
     // transfer swizzle corrupts bedroom textures; the isolated block-swizzle
@@ -598,7 +634,7 @@ void tex_upload(Texture *t, int l) {
         if(packed) {
             sh4_dxt1_rgb565(src,packed,w,h);
             uint64_t decoded=prep_t0?SDL_GetPerformanceCounter():0;
-            glTexImage2D(g_up_target,gl_l,GL_RGB,(GLsizei)w,(GLsizei)h,0,GL_RGB,GL_UNSIGNED_SHORT_5_6_5,packed);
+            up_image(t,gl_l,GL_RGB,(GLsizei)w,(GLsizei)h,GL_RGB,GL_UNSIGNED_SHORT_5_6_5,packed);
             if(gl_l==0 || !t->tfmt)t->tfmt=1;
             if(prep_t0) {
                 double k=1000.0/SDL_GetPerformanceFrequency();
@@ -623,7 +659,10 @@ void tex_upload(Texture *t, int l) {
     int alpha = fmt_is_dxt(t->fmt) ? t->fmt != FMT_DXT1 : t->fmt == FMT_A8R8G8B8 || t->fmt == FMT_A1R5G5B5 || t->fmt == FMT_A4R4G4B4 || t->fmt == FMT_A8 || t->fmt == FMT_A8L8;
     // alpha format but opaque: 565 keeps more colour. Balanced/high also test uncompressed formats (SH3's
     // rooms are 512x512 A8R8G8B8, which the performance level stores as 4444).
-    if (alpha && (fmt_is_dxt(t->fmt) || texq >= 1) && (gl_l == 0 || !t->tfmt)) { uint8_t m = 255; for (uint32_t i = 0; i < w * h; i++) m &= tmp[4 * i + 3]; if (m == 255) alpha = 0; }
+    // a texture rewritten every frame keeps the format it was given (no per-frame alpha scan, and its storage
+    // stays valid for glTexSubImage2D); a quality change resets tfmt and decides again
+    int decide = !t->tfmt || (gl_l == 0 && (t->ups <= 4 || !tex_sub_on()));
+    if (alpha && (fmt_is_dxt(t->fmt) || texq >= 1) && decide) { uint8_t m = 255; for (uint32_t i = 0; i < w * h; i++) m &= tmp[4 * i + 3]; if (m == 255) alpha = 0; }
     // Preserve alpha precision separately from opaque texture storage. Laboratory
     // SH4_ALPHA32_MAX=512 raises only this threshold, unlike global TEX32.
     // The normal threshold remains 256; ALPHA16 still takes precedence.
@@ -637,7 +676,7 @@ void tex_upload(Texture *t, int l) {
     }
     if (a16 < 0) a16 = getenv("SH4_ALPHA16") != NULL;
     if (tex32 < 0) { const char *e = getenv("SH4_TEX32"); tex32 = e && !strcmp(e,"1"); }
-    if (gl_l == 0 || !t->tfmt) {
+    if (decide) {
         unsigned amax = texq >= 1 && alpha32_max < 512 ? 512 : alpha32_max;
         int was = t->tfmt;
         t->tfmt = tex32 || texq == 2 ? 3 : !alpha ? 1 : (!a16 && w <= amax && h <= amax) ? 3 : 2;
@@ -645,7 +684,7 @@ void tex_upload(Texture *t, int l) {
     }
     alpha = t->tfmt != 1;   // every level of a texture shares level 0's format
     if (t->tfmt == 3) {
-        glTexImage2D(g_up_target, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+        up_image(t, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
         if (prep_t0) {
             uint64_t end = SDL_GetPerformanceCounter();
             double scale = 1000.0 / (double)SDL_GetPerformanceFrequency();
@@ -674,8 +713,8 @@ void tex_upload(Texture *t, int l) {
         }
     }
     uint64_t prep_t2 = prep_t0 ? SDL_GetPerformanceCounter() : 0;
-    glTexImage2D(g_up_target, gl_l, alpha ? GL_RGBA : GL_RGB, (GLsizei)w, (GLsizei)h, 0, alpha ? GL_RGBA : GL_RGB,
-                 alpha ? GL_UNSIGNED_SHORT_4_4_4_4 : GL_UNSIGNED_SHORT_5_6_5, tmp);
+    up_image(t, gl_l, alpha ? GL_RGBA : GL_RGB, (GLsizei)w, (GLsizei)h, alpha ? GL_RGBA : GL_RGB,
+             alpha ? GL_UNSIGNED_SHORT_4_4_4_4 : GL_UNSIGNED_SHORT_5_6_5, tmp);
     if (prep_t0) {
         uint64_t end = SDL_GetPerformanceCounter();
         double scale = 1000.0 / (double)SDL_GetPerformanceFrequency();
@@ -684,7 +723,7 @@ void tex_upload(Texture *t, int l) {
                (prep_t1 - prep_t0) * scale, (prep_t2 - prep_t1) * scale, (end - prep_t2) * scale);
     }
 #else
-    glTexImage2D(g_up_target, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+    up_image(t, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
 #endif
     free(tmp);
 }
