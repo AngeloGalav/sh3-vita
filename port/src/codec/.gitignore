@@ -1,0 +1,4 @@
+# Build output (host objects, harness binary, Vita objects/lib) never gets
+# committed. The repo-root .gitignore already matches any "build/" directory;
+# this local rule keeps the guarantee inside the codec directory.
+build/
