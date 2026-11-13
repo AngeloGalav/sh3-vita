@@ -1,71 +1,47 @@
-# sh3-port — Silent Hill 3 (2003 PC) to PS Vita
+<h1 align="center">sh3-port: Silent Hill 3 for PlayStation Vita</h1>
 
-Version **0.0.1** (see `VERSION`). An experimental static-recompilation port of
-the 2003 `sh3.exe` (x86 PE32) to the PS Vita. The recompiler translates the
-game's own x86 code to C; the host provides a Win32 / D3D8 / DInput /
-DirectSound shim and vitaGL rendering.
+<p align="center">
+  An experimental static-recompilation port of the 2003 PC game. Version 0.0.1.<br>
+  Bring your own copy of the game.
+</p>
 
-> **Read this first.** Nothing in this repository has been confirmed on a real
-> PS Vita. All testing so far is on a PC (Linux, Docker, software GL) and in the
-> Vita3K+ emulator. Emulator results are not console results. Version 0.0.1 is a
-> development snapshot, not a playable release.
+<p align="center">
+  <img alt="Platform: PS Vita" src="https://img.shields.io/badge/platform-PS%20Vita-2f5da8?style=flat-square">
+  <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-5b7083?style=flat-square"></a>
+  <img alt="Status: not run on a console" src="https://img.shields.io/badge/console-untested-b5483a?style=flat-square">
+</p>
 
-This project does **not** contain or distribute any Silent Hill 3 files. You
-need your own copy of the 2003 PC release.
+sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler translates the game's `sh3.exe` (x86) to C, and a Win32 / Direct3D 8 / DirectInput / DirectSound compatibility layer runs it over [vitaGL](https://github.com/Rinnegatamante/vitaGL) on the Vita. It is built on [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, the Silent Hill 4 port that came first, and uses [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev as its rendering reference.
 
-## What works (0.0.1)
+**sh3-port contains no game data.** You need your own copy of the 2003 PC game.
 
-Host-tested only (PC, Docker image `sh3host:local`, Mesa software GL, dummy
-audio driver):
+> [!WARNING]
+> Nothing here has been confirmed on a real PS Vita. Everything was tested on a PC (Linux, Docker, software GL) and in the Vita3K+ emulator, and emulator results are not console results. 0.0.1 is a development snapshot, not a playable release.
 
-- Boot, Konami logo, content warning, the port's credits page, title menu.
-- **New Game**: the in-engine intro, then the **first playable room** (`tpf1`,
-  Lakeside Amusement Park entrance). Heather walks (arrow keys / WASD) and stops
-  at walls. In the views compared so far the room renders like
-  [sh3-nx](https://github.com/cutarev/sh3-nx), the independent port of the same
-  exe used as rendering reference (evidence, not ground truth).
-- Options → Configuration → Textures (see below).
-- Opening movie `op.000` plays in-game on the PC build through the game's own
-  DirectShow-style graph. Only the first ~90 s of 192 s were checked; the end of
-  the movie, skipping, the other six movies and audible audio are untested. The
-  source change that does this was still uncommitted when this README was
-  written.
+## What it does
 
-What is **not** confirmed:
+Tested on a PC only (Docker image `sh3host:local`, Mesa software GL, dummy audio):
 
-- **Anything on a physical PS Vita.** No console run has happened.
-- **Vita3K+**: the VPK boots, loads the exe and archives and reaches the game
-  loop, but showed a black screen at the last check. A fix for a Vita-side file
-  read offset is in the source and has not been re-run on the emulator.
-  Emulator results are emulator-only.
-- Real audio output (the runtime audio path was only run on a dummy driver),
-  performance, memory headroom and texture VRAM cost on a Vita, save/load round
-  trips, anything past the first room.
+- Boots through the Konami logo, content warning, the port's credits page and the title menu
+- New Game: the in-engine intro, then the first playable room (`tpf1`, Lakeside Amusement Park entrance); Heather walks (arrows / WASD) and stops at walls
+- Renders that room like sh3-nx in the views compared so far, including the local spotlights (evidence, not ground truth)
+- A "Textures" option (Performance / Balanced / High) and a working Resolution list
+- The opening movie `op.000` plays in-game on the PC build, through the game's own DirectShow-style graph. Only the first ~90 s of 192 s were checked, and the end, skipping, the other six movies and audible audio are untested. The source change for this was still uncommitted when this was written.
 
-## Installing on the Vita
+## Install
 
-This is for people who can build the port themselves: 0.0.1 ships no pre-built
-VPK, and none of the steps below has been verified on a console.
+0.0.1 ships no pre-built VPK, and none of these steps has been verified on a console. You need:
 
-1. Build the VPK with `docker/build-vita.sh`. It needs the generated code in
-   `port/gen-sh3/`, produced by `python3 recomp/x86rec.py --target sh3` from your
-   own `game/sh3.exe`. The output is `sh4.vpk` (the file name is inherited from
-   SH4); title ID **`SILH00003`**.
-2. Install the VPK with VitaShell.
-3. Copy **your own** Silent Hill 3 PC files to `ux0:data/sh3/`: `sh3.exe` and the
-   `data` folder from your installation. The supported executable is the 2003
-   release with SHA-256
-   `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`; other
-   builds are not supported. If `sh3.exe` or `data` is missing, the port shows a
-   "GAME FILES NOT FOUND" screen.
-4. Like any vitaGL program, the port compiles shaders at run time and needs the
-   Vita's `libshacccg.suprx` to be installed already. This project neither
-   supplies nor links to it.
+- a PS Vita with custom firmware
+- `ur0:data/libshacccg.suprx`, the system's shader compiler, which the port compiles its shaders with. This project neither supplies nor links to it
+- the 2003 PC release of Silent Hill 3: `sh3.exe` (SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`) and its `data` folder. Other builds are not supported
+- on your computer: Docker, and Python 3 for the recompiler
 
-Game files are your responsibility: this project provides no download of
-`sh3.exe`, game data, or any proprietary Sony module.
+1. Generate the C code from your own executable: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
+2. Build the package: `docker/build-vita.sh`. It writes `sh4.vpk` (the name is inherited from SH4); title ID `SILH00003`. Install it with VitaShell.
+3. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
 
-Logs go to `ux0:data/sh3/sh4log.txt` (the log name is inherited from SH4).
+Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4). This project provides no download of game files or of any Sony module.
 
 ## Options
 
@@ -86,6 +62,32 @@ on a Vita is not measured.
 
 Options → Resolution lists 640×480, 800×600 and 1024×768 (the original list
 failed to enumerate).
+
+## Status
+
+What works and what is open, by milestone:
+
+- **J0** target tooling: see `docs/PORTAGE-SH3-2026-11-11.md` §9–§11
+- **J1** SIMD outside the CRI codec: done, differential test green
+- **J2** linked startup to the first room: works on the Linux host
+- **J3** data formats: complete (`docs/DATA-FORMATS-SH3.md`); `tools/j3_check_all.py` re-checks every format against the documented counts
+- **J4** Direct3D 8 on Vita: census done (`docs/J4-D3D8-CENSUS.md`), translator not started
+- **J5** native decoders: ADX/AIX/AFS decoders and the `.000` demangler in `port/src/codec/` are bit-exact against the J3 tools on the host. The runtime uses only the demangler; the audio decoders are not wired in
+- **Vita build**: boots in Vita3K+ but showed a black screen at the last check. A fix for a Vita-side file read offset is in the source and has not been re-run on the emulator
+
+Not confirmed: anything on a physical Vita, real audio output (only a dummy driver was used), performance, memory and texture VRAM cost on a Vita, saving and loading, anything past the first room.
+
+## Building and working on it
+
+The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is `docker/host-build.sh` (`port/Makefile.linux`). Several names are inherited from the SH4 port and not renamed: the CMake target and `sh4.vpk`, the `SH4_*` variables and options, `sh4log.txt`. `-DSH3=OFF` builds the inherited SH4 layout, which is not maintained here.
+
+| Path | What's in it |
+| --- | --- |
+| `recomp/x86rec.py` | x86 to C recompiler (`--target sh3`) |
+| `re/` | Ghidra export script and PE import lister |
+| `port/` | Win32 / DX shim (`src/win32`, `src/dx`, `src/d3d8`), runtime (`src/rt`), Vita, PC and port-specific layers (`src/vita`, `src/pc`, `src/host`), vitaGL patches |
+| `docker/` | VitaSDK image, `build-vita.sh`, `smoke.sh`, `host-build.sh` |
+| `docs/` | Study and tracking documents |
 
 ## Debug environment switches
 
@@ -109,75 +111,24 @@ buffer), `SH3_TRACE`, `SH3_SYNCLOG`, `SH3_FILELOG`, `SH3_READLOG`,
 `SH3_TRACE_SHADER`, `SH3_MEMCRC`, and `SH4_INPUT="frame:DIK[:duration],..."` for
 scripted keyboard input.
 
-## Credits
+## Thanks
 
-**AI-assisted port by [AngeloGalav](https://github.com/AngeloGalav).** Based on
-the work of (the same entries as the in-game credits page,
-`port/src/host/sh3_port_ui.c`):
+The in-game credits page lists the first four:
 
-- vallfrr's [sh4vita](https://github.com/vallfrr/sh4vita)
-- cutarev's [sh3-nx](https://github.com/cutarev/sh3-nx)
-- AngeloGalav's [sh2-vita](https://github.com/AngeloGalav/sh2-vita)
-- Silent Hill 3 PC Fix by Steam006 (2.8.9.1),
-  <https://community.pcgamingwiki.com/files/file/1331>
+- [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, which this port is based on
+- [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev, the rendering reference
+- [sh2-vita](https://github.com/AngeloGalav/sh2-vita) by AngeloGalav
+- The Silent Hill 3 PC Fix by Steam006 (2.8.9.1), <https://community.pcgamingwiki.com/files/file/1331>
+- [vitaGL](https://github.com/Rinnegatamante/vitaGL) and vitaShaRK by Rinnegatamante, the [VitaSDK](https://vitasdk.org/) team and [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski
 
-Third-party software compiled into the port is listed in
-[`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), with license texts in
-[`LICENSES/`](LICENSES/). Silent Hill 3 and its assets belong to their owners
-and are not part of this project.
+AI-assisted port by [AngeloGalav](https://github.com/AngeloGalav). Third-party code compiled into the port is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with texts in [LICENSES/](LICENSES/).
 
-## Layout
+## License
 
-- `recomp/x86rec.py` — x86→C static recompiler. `--target sh3` reads
-  `game/sh3.exe` + `re/out/functions-sh3.json` and writes `port/gen-sh3/`.
-- `re/` — Ghidra export script (`ghidra/ExportFunctions.java`), PE import
-  lister (`pe_imports.py`), SH4 import ledger (`LEDGER.md`, *inherited from SH4*).
-- `port/` — Vita/PC host: Win32+DX shim (`src/win32`, `src/dx`, `src/d3d8`),
-  runtime (`src/rt`), platform layers (`src/vita`, `src/pc`, `src/host`), vitaGL
-  patches (`patches/`, *inherited from SH4*).
-- `docker/` — VitaSDK image, `build-vita.sh`, `smoke.sh` (toolchain check, no
-  game code), `host-build.sh` (PC test image).
-- `docs/` — study and tracking documents (English).
+The repository's [LICENSE](LICENSE) is the GNU General Public License v3.0; the third-party notices record which licensing questions are still open. Bundled third-party code keeps its own license.
 
-*Inherited from SH4 and not renamed:* the CMake target and VPK file name
-(`sh4`, `sh4.vpk`), the `SH4_*` environment variables and compile options, and
-the log name `sh4log.txt`. `-DSH3=OFF` builds the inherited SH4 layout, which is
-not maintained here.
+This is a fan project, not affiliated with or endorsed by Konami or Sony. *Silent Hill* is a trademark of Konami Digital Entertainment and PlayStation Vita is a trademark of Sony Interactive Entertainment. Silent Hill 3 and its assets are not part of this project.
 
-## Inputs (never versioned)
+## AI disclosure
 
-- `game/sh3.exe` — oracle: 2003 release, SHA-256
-  `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`.
-  No Steam/GOG release of SH3 exists; this binary is the sole reference.
-- `re/out/functions-sh3.json` — Ghidra export (8,145 functions, 532,994 body
-  instructions).
-- `port/gen-sh3/` — generated C, never committed.
-
-## Status by milestone
-
-- **J0** (target tooling): see `docs/PORTAGE-SH3-2026-11-11.md` §9–§11.
-- **J1** (SIMD outside the CRI codec): done, differential test green.
-- **J2** (linked startup → first room): works on the Linux host as described
-  above.
-- **J3** (data formats): complete, documented in `docs/DATA-FORMATS-SH3.md`;
-  `tools/j3_check_all.py` re-checks every format against the documented counts.
-- **J4** (D3D8 on Vita): census done (`docs/J4-D3D8-CENSUS.md`); translator not
-  started.
-- **J5** (native decoders): ADX/AIX/AFS decoders and the `.000` demangler in
-  `port/src/codec/` are bit-exact against the J3 tools on the host. The runtime
-  uses only the `.000` demangler (movie path); the audio decoders are not wired
-  in.
-- **Vita build**: `docker/build-vita.sh` produces an SH3 VPK (see above). Not run
-  on a console.
-
-Testing is on PC and the Vita3K+ emulator; emulator results are never console
-validation.
-
-## How this was made
-
-*Inherited from the SH4 README and adapted.* This is an experimental project,
-built on top of the [Silent Hill 4 Vita port (sh4vita)](https://github.com/vallfrr/sh4vita)
-by vallfrr: recompiler approach, Win32/D3D8 shim, runtime. Most of the work was
-done with **Qwen Flash Next**, a local model, and with **Claude Sonnet**;
-validation with **Claude Opus** is planned for later. Treat every claim in the
-docs as "checked on PC/emulator only" unless stated otherwise.
+Most of this port's code, documentation and commit messages was written with AI coding agents (Qwen Flash Next, a local model, and Claude Sonnet; Claude Opus is planned for validation), under direction from a person. Expect mistakes, and treat every claim as "checked on PC or emulator only" unless it says otherwise. The approach and much of the runtime come from sh4vita.
