@@ -34,3 +34,12 @@ void nat_crt_memcpy(CPU *c) {   // cdecl void *memcpy(dst, src, n): returns dst;
     c->eax = d;
     c->esp += 4;
 }
+
+#include <math.h>
+void nat_crt_cifmod(CPU *c) {   // _CIfmod (x87 intrinsic): pops y = ST(0), replaces x = ST(1) with fmod(x, y); near ret
+    double y = ST(0), x = ST(1);
+    FPOP();
+    ST(0) = fmod(x, y);
+    c->esp += 4;
+}
+void rt_audit_watchdog(void) {}   // SH4 hardware-audit hook (src/rt/audit.c, skipped for SH3) called by the Vita watchdog

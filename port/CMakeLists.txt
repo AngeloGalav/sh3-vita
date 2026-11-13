@@ -7,14 +7,39 @@ endif()
 project(sh4vita C)
 include("$ENV{VITASDK}/share/vita.cmake" REQUIRED)
 
-set(VITA_APP_NAME "Silent Hill 4: The Room")
-set(VITA_TITLEID  "SILH00004")
+option(SH3 "build the Silent Hill 3 port (port/gen-sh3)" ON)
+if(SH3)
+  set(VITA_APP_NAME "Silent Hill 3")
+  set(VITA_TITLEID  "SILH00003")
+  set(VITA_LOG_DIR  "sh3")
+else()
+  set(VITA_APP_NAME "Silent Hill 4: The Room")
+  set(VITA_TITLEID  "SILH00004")
+  set(VITA_LOG_DIR  "sh4")
+endif()
 set(VITA_VERSION "00.01" CACHE STRING "VPK application version (keep the title ID unchanged)")
 
-# C code generated from the player's own exe (port/gen/, never versioned): run recomp/x86rec.py first.
-file(GLOB GEN_SRC ${CMAKE_SOURCE_DIR}/gen/*.c)
+# SH3 (default for this repo): generated code in port/gen-sh3 (recomp/x86rec.py --target sh3), same runtime as
+# port/Makefile.linux (SH4-only gameplay hooks skipped, SH3 stubs added). -DSH3=OFF builds the inherited SH4 layout.
+if(SH3)
+  set(GEN_DIR gen-sh3)
+else()
+  set(GEN_DIR gen)
+endif()
+# C code generated from the player's own exe (never versioned): run recomp/x86rec.py first.
+file(GLOB GEN_SRC ${CMAKE_SOURCE_DIR}/${GEN_DIR}/*.c)
 file(GLOB RT_SRC
   src/rt/*.c src/win32/*.c src/d3d8/*.c src/dx/*.c src/vita/*.c src/third_party/tlsf/tlsf.c)
+if(SH3)
+  # keep in sync with SKIP in port/Makefile.linux
+  foreach(f pc/prof.c rt/audio_adpcm_bridge.c rt/audio_adpcm.c rt/collision.c rt/collision_list_bridge.c
+            rt/collision_native.c rt/collision_segment.c rt/collision_segment_bridge.c rt/controls_help.c
+            rt/menu_test.c rt/natives.c rt/options.c rt/raytri.c rt/save_error.c rt/save_write.c
+            rt/cinematic.c rt/model.c rt/model_uv.c rt/audit.c)
+    list(REMOVE_ITEM RT_SRC ${CMAKE_SOURCE_DIR}/src/${f})
+  endforeach()
+  list(APPEND RT_SRC src/host/sh3_stubs.c)
+endif()
 
 # Vita RAM is tight: guest memory (20 MB image + game heap) and host heap.
 if(NOT DEFINED SH4_GUEST_MB)
@@ -44,10 +69,13 @@ if(SH4_TEST_QUALITY_512)
   endif()
   target_compile_definitions(sh4 PRIVATE SH4_TEST_QUALITY_512=1)
 endif()
-target_include_directories(sh4 PRIVATE src src/rt src/d3d8 gen "$ENV{VITASDK}/arm-vita-eabi/include/SDL2")
+target_include_directories(sh4 PRIVATE src src/rt src/d3d8 ${GEN_DIR} "$ENV{VITASDK}/arm-vita-eabi/include/SDL2")
 target_compile_definitions(sh4 PRIVATE
   SH4_GUEST_MB=${SH4_GUEST_MB} SH4_HOST_HEAP_MB=${SH4_HOST_HEAP_MB} SH4_VGL_RAM_MB=${SH4_VGL_RAM_MB} SH4_SPARE_MB=${SH4_SPARE_MB}
-  SH4_LOG_PATH="ux0:data/sh4/sh4log.txt")
+  SH4_LOG_PATH="ux0:data/${VITA_LOG_DIR}/sh4log.txt")
+if(SH3)
+  target_compile_definitions(sh4 PRIVATE SH3_PORT)
+endif()
 target_compile_options(sh4 PRIVATE -O2
   -Wno-unused-label -Wno-unused-variable -Wno-unused-but-set-variable -Wno-int-conversion)
 # Generated code: -Os by default (measured -3 ms/frame in the hospital vs -O2; the guest code is huge -> I-cache footprint). -DSH4_GEN_FLAGS="" for -O2.
@@ -104,6 +132,13 @@ if(EXISTS "${SH4_SHADER_CACHE_DIR}/manifest.json")
 elseif(SH4_REQUIRE_SHADER_CACHE)
   message(FATAL_ERROR "A release package requires SH4_SHADER_CACHE_DIR with a validated cache bundle")
 endif()
+set(SH4_UI_VPK_FILES)
+if(NOT SH3)   # SH4 controller-help art (not shipped in the SH3 repo; the SH3 build has no controls overlay yet)
+  set(SH4_UI_VPK_FILES
+    FILE assets/controls/controls.tga ui/controls.tga
+    FILE assets/controls/README.md ui/CONTROLLER-ART-CREDITS.md
+    FILE assets/controls/Kenney-License.txt ui/Kenney-License.txt)
+endif()
 vita_create_vpk(sh4.vpk ${VITA_TITLEID} eboot.bin
   VERSION ${VITA_VERSION}
   NAME ${VITA_APP_NAME}
@@ -112,9 +147,7 @@ vita_create_vpk(sh4.vpk ${VITA_TITLEID} eboot.bin
   FILE livearea/bg.png sce_sys/livearea/contents/bg.png
   FILE livearea/startup.png sce_sys/livearea/contents/startup.png
   FILE livearea/template.xml sce_sys/livearea/contents/template.xml
-  FILE assets/controls/controls.tga ui/controls.tga
-  FILE assets/controls/README.md ui/CONTROLLER-ART-CREDITS.md
-  FILE assets/controls/Kenney-License.txt ui/Kenney-License.txt
+  ${SH4_UI_VPK_FILES}
   ${SH4_CACHE_VPK_FILES})
 
 # Diagnostics: ring of the last guest functions (cmake -DSH4_TRACE_CALLS=ON), printed before a FATAL.

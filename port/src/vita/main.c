@@ -25,7 +25,15 @@
 int _newlib_heap_size_user = SH4_HOST_HEAP_MB * 1024 * 1024;
 unsigned int sceUserMainThreadStackSize = 4 * 1024 * 1024;
 
+#ifdef SH3_PORT
+#define DATA_DIR "ux0:data/sh3"
+#define GAME_EXE "sh3.exe"
+#define GAME_FOLDER "sh3"
+#else
 #define DATA_DIR "ux0:data/sh4"
+#define GAME_EXE "SILENT HILL 4.exe"
+#define GAME_FOLDER "sh4"
+#endif
 
 // Disable the vitaGL boot splash: this overrides the library's invoke_splashscreen()
 // (CMake links with --allow-multiple-definition so the first definition, this one, wins).
@@ -198,8 +206,12 @@ static void boot_check_index(void) {
     sceKernelExitProcess(0);
 }
 static void boot_checks(void) {
-    if (!file_exists(DATA_DIR "/SILENT HILL 4.exe") || !file_exists(DATA_DIR "/data")) {
+    if (!file_exists(DATA_DIR "/" GAME_EXE) || !file_exists(DATA_DIR "/data")) {
+#ifdef SH3_PORT
+        static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh3/", "", "Copy sh3.exe and the data folder", "from your own copy of the game", "to ux0:data/sh3/ (see README)."};
+#else
         static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh4/", "", "Run sh4prep on your PC with your own copy", "of the game, then copy the sh4 folder", "to ux0:data/ on the Vita (see README)."};
+#endif
         boot_error(m, 7);
         sceKernelExitProcess(0);
     }
@@ -450,9 +462,9 @@ int main(void) {
     rt_init_mem(gmem, gsize);
     log_free("after guest memory");
     char exe[300];
-    SDL_snprintf(exe, sizeof exe, "%s/SILENT HILL 4.exe", g_game_dir);
+    SDL_snprintf(exe, sizeof exe, "%s/" GAME_EXE, g_game_dir);
     int r = rt_load_exe(exe);
-    if (r) rt_fatal("cannot load %s (%d): copy the sh4/ folder to ux0:data/", exe, r);
+    if (r) rt_fatal("cannot load %s (%d): copy the " GAME_FOLDER "/ folder to ux0:data/", exe, r);
     rt_fill_iat();
     rt_log("game loaded from %s\n", g_game_dir);
     SDL_CreateThread(watchdog_thread, "watchdog", NULL);

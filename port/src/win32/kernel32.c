@@ -736,6 +736,7 @@ K(ReadFile) {
         errno = 0; pos0 = ftell(f->f);
         if (pos0 < 0) error = file_error(errno, 25);
     }
+    if (!error && getenv("SH3_READLOG")) rt_log("[read] h=%x pos=%ld n=%u buf=%x\n", ARG(1), pos0, n, buf);
     uint64_t t_io = SDL_GetPerformanceCounter();
     int pfhit = 0, headhit = 0;
     if (!error) {

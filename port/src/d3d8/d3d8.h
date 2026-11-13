@@ -16,6 +16,8 @@ enum { K_D3D, K_DEVICE, K_TEXTURE, K_SURFACE, K_VB, K_IB, K_CUBE, K_VOLTEX,
 uint32_t com_wrap(ComObj *o, int kind, const gfn *methods, int n, const char *iface);
 ComObj *com_get(uint32_t guest);
 void *com_get_kind(uint32_t guest, int kind);
+GLuint cube_gl(void *cube);          // GL cube map of an IDirect3DCubeTexture8, uploaded from its faces when dirty
+uint32_t cube_levels(void *cube);
 void com_free(ComObj *o);
 #define THIS(T, kind) T *self = com_get_kind(ARG(1), kind); (void)self
 #define HR_OK 0u
@@ -104,6 +106,7 @@ typedef struct Device {
     float world[16], view[16], proj[16], texm[MAX_STAGES][16];
     struct { uint32_t x, y, w, h; float minz, maxz; } vp;
     Texture *tex[MAX_STAGES];
+    void *cube[MAX_STAGES];   // IDirect3DCubeTexture8 bound on the stage (tex[s] is then NULL)
     struct { Buffer *vb; uint32_t stride; } stream[16];
     Buffer *ib;
     uint32_t base_vertex;

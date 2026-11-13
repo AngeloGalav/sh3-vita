@@ -484,14 +484,38 @@ static uint64_t frag_opts(Device *d) {
     if (rs[15]) o |= (uint64_t)(rs[25] & 0xf) << 0;            // ALPHATEST + function
     if (rs[28] && !ctl_nofog) o |= (uint64_t)(1 + (rs[35] & 3)) << 4;        // FOG : 1 = vertex, 2..4 = table EXP/EXP2/LINEAR
     if (rs[29]) o |= 1u << 8;                                  // SPECULARENABLE
+    for (int i = 0; i < MAX_STAGES && i < 8; i++)              // cube-map stages: samplerCube + 3D lookup
+        if (d->cube[i]) o |= 1ull << (16 + i);
     return o;
 }
 static char *build_fs(Device *d, const char *body, uint64_t opts) {
     char *s = strf(GLSL_PRE_FS "varying vec4 vD0;\nvarying vec4 vD1;\nvarying vec4 vT0;\nvarying vec4 vT1;\nvarying vec4 vT2;\nvarying vec4 vT3;\nvarying float vFog;\n"
                    "uniform vec4 pc[8];\nuniform vec4 uTF;\nuniform vec4 uFogC;\nuniform vec4 uFogP;\nuniform float uARef;\n");
-    for (int i = 0; i < MAX_STAGES; i++) catf(&s, "uniform sampler2D s%d;\n", i);
+    for (int i = 0; i < MAX_STAGES; i++) catf(&s, "uniform sampler%s s%d;\n", i < 8 && (opts >> (16 + i) & 1) ? "Cube" : "2D", i);
     cat(&s, "void main() {\n  vec4 col;\n");
-    cat(&s, body);
+    char *cbody = NULL;
+    for (int i = 0; i < MAX_STAGES && i < 8; i++) {
+        if (!(opts >> (16 + i) & 1)) continue;
+        // texture2D(sN, X.xy) -> textureCube(sN, X.xyz); any other lookup on a cube stage (dependent read) is left as is and logged
+        const char *src = cbody ? cbody : body;
+        char pat[24]; snprintf(pat, sizeof pat, "texture2D(s%d, ", i);
+        char *out = strf("%s", ""); const char *q = src, *m;
+        while ((m = strstr(q, pat))) {
+            const char *close = strchr(m, ')');
+            catf(&out, "%.*s", (int)(m - q), q);
+            if (close && close - m > 3 && !strncmp(close - 3, ".xy", 3) && memchr(m + strlen(pat), '(', (size_t)(close - m - strlen(pat))) == NULL) {
+                catf(&out, "textureCube(s%d, %.*sz)", i, (int)(close - (m + strlen(pat))), m + strlen(pat));
+            } else {
+                d3d_log_once("cube stage sampled with a 2D/dependent lookup: left as texture2D");
+                catf(&out, "%.*s", close ? (int)(close + 1 - m) : (int)strlen(m), m);
+            }
+            q = close ? close + 1 : m + strlen(m);
+        }
+        cat(&out, q);
+        free(cbody); cbody = out;
+    }
+    cat(&s, cbody ? cbody : body);
+    free(cbody);
     if (opts & (1u << 8)) cat(&s, "  col.xyz = clamp(col.xyz + vD1.xyz, 0.0, 1.0);\n");
     static const char *cmp[] = {"", "false", "a < r", "a == r", "a <= r", "a > r", "a != r", "a >= r", "true"};
     uint32_t af = opts & 0xf;
@@ -535,6 +559,9 @@ static Prog *get_prog(Device *d, VShader *vs, uint32_t fvf, PShader *ps) {
     char *fsrc = build_fs(d, body, opts);
     extern unsigned g_stat_progs;
     g_stat_progs++;
+    { static int cube_logged; if (!cube_logged && (opts >> 16 & 0xff)) { cube_logged = 1;
+        rt_log("[glsl-cube] first program with cube stages mask=%02x vs=%08x ps=%x\n--- VS ---\n%s--- FS ---\n%s--- fin ---\n",
+               (unsigned)(opts >> 16 & 0xff), vs ? vs->handle : (uint32_t)(vkey & 0xffffffffu), ps ? ps->handle : 0, vsrc, fsrc); } }
     if (g_stat_progs <= 3) rt_log("[glsl] prog #%u vs=%08x ps=%x\n--- VS ---\n%s--- FS ---\n%s--- fin ---\n",
                                   g_stat_progs, vs ? vs->handle : (uint32_t)(vkey & 0xffffffffu),
                                   ps ? ps->handle : 0, vsrc, fsrc);
@@ -725,6 +752,18 @@ static void apply_sampler(Device *d, int s) {
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, (GLint)min);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, (GLint)wrap[t[13] < 6 ? t[13] : 1]);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, (GLint)wrap[t[14] < 6 ? t[14] : 1]);
+}
+static void apply_sampler_cube(Device *d, int s) {   // cube maps: D3D filters, edges always clamped (seamless-ish)
+    uint32_t *t = d->tss[s];
+    GLenum mag = t[16] >= 2 ? GL_LINEAR : GL_NEAREST;
+    GLenum min = t[17] >= 2 ? GL_LINEAR : GL_NEAREST;
+    if (cube_levels(d->cube[s]) > 1 && t[18])
+        min = t[17] >= 2 ? (t[18] >= 2 ? GL_LINEAR_MIPMAP_LINEAR : GL_LINEAR_MIPMAP_NEAREST)
+                         : (t[18] >= 2 ? GL_NEAREST_MIPMAP_LINEAR : GL_NEAREST_MIPMAP_NEAREST);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAG_FILTER, (GLint)mag);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MIN_FILTER, (GLint)min);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
 }
 static void set_color4(GLint loc, uint32_t argb) {
     if (uniform_valid(loc))
@@ -1135,6 +1174,12 @@ static void draw_impl(Device *d, uint32_t prim, uint32_t first, uint32_t nverts,
     }
     PH(0);
     for (int s = 0; s < MAX_STAGES; s++) {
+        if (d->cube[s]) {
+            glActiveTexture(GL_TEXTURE0 + (GLenum)s);
+            glBindTexture(GL_TEXTURE_CUBE_MAP, cube_gl(d->cube[s]));
+            apply_sampler_cube(d, s);
+            continue;
+        }
         if (!d->tex[s]) continue;
         glActiveTexture(GL_TEXTURE0 + (GLenum)s);
         glBindTexture(GL_TEXTURE_2D, tex_gl(d->tex[s]));

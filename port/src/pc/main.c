@@ -41,6 +41,7 @@ void plat_gl_init(void) {
     SDL_GL_SetSwapInterval(getenv("SH4_NOVSYNC") ? 0 : 1);
 }
 #include <SDL_opengl.h>
+#include "d3d8.h"
 // SH3_SHOTS="30,120": dump the back buffer (PPM) before presenting the given frames (host bring-up screenshots).
 static void shot_maybe(void) {
     static unsigned frame; static const char *spec; static int init;
@@ -58,6 +59,20 @@ static void shot_maybe(void) {
     char path[300]; snprintf(path, sizeof path, "shot_%u.ppm", frame);
     FILE *f = fopen(path, "wb");
     if (f) { fprintf(f, "P6\n%d %d\n255\n", w, h); for (int y = h - 1; y >= 0; y--) fwrite(px + (size_t)y * w * 3, 1, (size_t)w * 3, f); fclose(f); rt_log("[shot] %s %dx%d\n", path, w, h); }
+    {   // SH3 camera globals (camera update 0x4c3ea0): eye vec4 0xba99c4, look-at target vec4 0xba99d4
+        float v[8]; memcpy(v, g_mem + 0xba99c4, sizeof v);
+        rt_log("[shot-cam] frame=%u eye=%g,%g,%g target=%g,%g,%g\n", frame, v[0], v[1], v[2], v[4], v[5], v[6]);
+    }
+    { extern uint64_t g_heap_used, g_heap_peak;   // guest TLSF heap (base 0x07200000): sizes the Vita guest block
+      rt_log("[shot-heap] frame=%u used=%llu KB peak=%llu KB\n", frame, (unsigned long long)(g_heap_used >> 10), (unsigned long long)(g_heap_peak >> 10)); }
+    if (g_dev) {   // D3D state at the shot: fixed-function view/proj and VS constants c0..c7 (row-major as set by the game)
+        const float *m[2] = {g_dev->view, g_dev->proj}; static const char *nm[2] = {"view", "proj"};
+        for (int k = 0; k < 2; k++)
+            rt_log("[shot-%s] %g %g %g %g | %g %g %g %g | %g %g %g %g | %g %g %g %g\n", nm[k], m[k][0], m[k][1], m[k][2], m[k][3],
+                   m[k][4], m[k][5], m[k][6], m[k][7], m[k][8], m[k][9], m[k][10], m[k][11], m[k][12], m[k][13], m[k][14], m[k][15]);
+        for (int r = 0; r < 8; r++)
+            rt_log("[shot-vsc] c%d = %g %g %g %g\n", r, g_dev->vsc[r][0], g_dev->vsc[r][1], g_dev->vsc[r][2], g_dev->vsc[r][3]);
+    }
     free(px);
 }
 void plat_gl_swap(void) { shot_maybe(); SDL_GL_SwapWindow(g_win); }

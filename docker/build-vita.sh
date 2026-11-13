@@ -19,8 +19,8 @@ if ! docker image inspect "$IMAGE" >/dev/null 2>&1; then
     docker build -t "$IMAGE" -f "$R/docker/vita-sdk.Dockerfile" "$R"
 fi
 
-if ! ls "$R"/port/gen/*.c >/dev/null 2>&1; then
-    echo "port/gen/ est vide : générer d'abord le C invité (recomp/x86rec.py)." >&2
+if ! ls "$R"/port/gen-sh3/*.c >/dev/null 2>&1; then
+    echo "port/gen-sh3/ is empty: generate the guest C first (python3 recomp/x86rec.py --target sh3)." >&2
     echo "Pour valider seulement la chaîne de compilation : docker/smoke.sh" >&2
     exit 1
 fi

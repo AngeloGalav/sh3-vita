@@ -266,8 +266,11 @@ const gfn tex_vt[] = {tex_QueryInterface, surf_AddRef, surf_Release, surf_GetDev
                       tex_GetType, tex_SetLOD, tex_GetLOD, tex_GetLevelCount, tex_GetLevelDesc, tex_GetSurfaceLevel,
                       tex_LockRect, tex_UnlockRect, tex_AddDirtyRect};
 
-// ---------- IDirect3DCubeTexture8 (SH3 probes and may fill cube maps; rendering from them is not implemented) ----------
-typedef struct CubeTexture { ComObj com; uint32_t fmt, edge, levels, usage, pool; Texture *face[6]; } CubeTexture;
+// GL target of the level being uploaded: GL_TEXTURE_2D, or one cube face (cube_gl).
+static GLenum g_up_target = GL_TEXTURE_2D;
+void tex_upload(Texture *t, int l);
+// ---------- IDirect3DCubeTexture8 (faces = six 2D Textures holding the guest copies; rendered through cube_gl) ----------
+typedef struct CubeTexture { ComObj com; uint32_t fmt, edge, levels, usage, pool; Texture *face[6]; GLuint gl; } CubeTexture;
 M(cube, QueryInterface) { STDRET(3, 0x80004002u); }
 M(cube, GetType) { STDRET(1, 5); }   // D3DRTYPE_CUBETEXTURE
 M(cube, GetLevelCount) { HOSTFN; THIS(CubeTexture, K_CUBE); STDRET(1, self->levels); }
@@ -294,8 +297,16 @@ M(cube, LockRect) {
     uint32_t w = self->edge >> l;
     STDRET(6, lock_rect(surf_mem(self->face[f]->lv[l]), self->fmt, w ? w : 1, ARG(4), ARG(5)));
 }
-M(cube, UnlockRect) { STDRET(3, HR_OK); }
-M(cube, AddDirtyRect) { STDRET(3, HR_OK); }
+M(cube, UnlockRect) {
+    HOSTFN; THIS(CubeTexture, K_CUBE);
+    if (ARG(2) < 6 && ARG(3) < 32) __atomic_fetch_or(&self->face[ARG(2)]->dirty, 1u << ARG(3), __ATOMIC_RELAXED);
+    STDRET(3, HR_OK);
+}
+M(cube, AddDirtyRect) {
+    HOSTFN; THIS(CubeTexture, K_CUBE);
+    if (ARG(2) < 6) __atomic_store_n(&self->face[ARG(2)]->dirty, 0xffffffffu, __ATOMIC_RELAXED);
+    STDRET(3, HR_OK);
+}
 static const gfn cube_vt[] = {cube_QueryInterface, surf_AddRef, surf_Release, surf_GetDevice, surf_SetPrivateData,
                               surf_GetPrivateData, surf_FreePrivateData, tex_SetPriority, tex_GetPriority, tex_PreLoad,
                               cube_GetType, tex_SetLOD, tex_GetLOD, cube_GetLevelCount, cube_GetLevelDesc,
@@ -310,6 +321,42 @@ uint32_t cube_create(uint32_t edge, uint32_t levels, uint32_t usage, uint32_t fm
     }
     t->levels = t->face[0]->levels;
     return com_wrap(&t->com, K_CUBE, cube_vt, 19, "IDirect3DCubeTexture8");
+}
+
+uint32_t cube_levels(void *cube) { return ((CubeTexture *)cube)->levels; }
+GLuint cube_gl(void *cube) {
+    CubeTexture *t = cube;
+    if (!t->gl) {
+        rt_log("[rt] cube_gl edge=%u lv=%u usage=%u fmt=%u\n", t->edge, t->levels, t->usage, t->fmt);
+        if (t->usage & 1) d3d_log_once("cube texture used as render target: faces are not rendered into the GL cube");
+        glGenTextures(1, &t->gl);
+        glBindTexture(GL_TEXTURE_CUBE_MAP, t->gl);
+#ifndef __vita__
+        glTexParameteri(GL_TEXTURE_CUBE_MAP, GL_TEXTURE_MAX_LEVEL, (GLint)t->levels - 1);
+#endif
+        for (int f = 0; f < 6; f++) __atomic_fetch_or(&t->face[f]->dirty, 0xffffffffu, __ATOMIC_RELAXED);
+    }
+    int bound = 0;
+    for (int f = 0; f < 6; f++) {
+        Texture *ft = t->face[f];
+        if (!__atomic_load_n(&ft->dirty, __ATOMIC_RELAXED)) continue;
+        uint32_t dirty = __atomic_exchange_n(&ft->dirty, 0, __ATOMIC_ACQ_REL);
+#ifdef __vita__
+        if (ft->levels > 1) dirty = 0xffffffffu;   // vitaGL: all levels or none (see tex_gl)
+#endif
+        if (!bound) { glBindTexture(GL_TEXTURE_CUBE_MAP, t->gl); bound = 1; }
+        if (ft->lv[0]->mem && ft->fmt == FMT_A8R8G8B8) {   // diagnostic: mean BGRA of level 0 of the face
+            static unsigned nlog; if (nlog++ < 12) {
+                const uint8_t *px = g_mem + ft->lv[0]->mem; uint64_t acc[4] = {0}; uint32_t np = ft->w * ft->h;
+                for (uint32_t i = 0; i < np; i++) for (int k = 0; k < 4; k++) acc[k] += px[i * 4 + k];
+                rt_log("[cube] face %d mean B=%llu G=%llu R=%llu A=%llu corner=%02x%02x%02x%02x\n", f, acc[0] / np, acc[1] / np, acc[2] / np, acc[3] / np, px[3], px[2], px[1], px[0]);
+            } }
+        g_up_target = GL_TEXTURE_CUBE_MAP_POSITIVE_X + (GLenum)f;   // D3DCUBEMAP_FACE_* order = GL order (+X,-X,+Y,-Y,+Z,-Z)
+        for (uint32_t l = 0; l < ft->levels; l++)
+            if (dirty & (1u << (l < 31 ? l : 31))) tex_upload(ft, (int)l);
+        g_up_target = GL_TEXTURE_2D;
+    }
+    return t->gl;
 }
 
 Texture *tex_create(uint32_t w, uint32_t h, uint32_t levels, uint32_t usage, uint32_t fmt, uint32_t pool) {
@@ -425,7 +472,7 @@ void tex_upload(Texture *t, int l) {
 #else
     if (fmt_is_dxt(t->fmt) && hw_dxt) {
 #endif
-        glCompressedTexImage2D(GL_TEXTURE_2D, gl_l, dxt_gl(t->fmt), (GLsizei)w, (GLsizei)h, 0,
+        glCompressedTexImage2D(g_up_target, gl_l, dxt_gl(t->fmt), (GLsizei)w, (GLsizei)h, 0,
                                (GLsizei)fmt_level_size(t->fmt, w, h), src);
 #ifdef __vita__
         // The next level reallocates (and copies) the texture storage: without this wait, the copy reads the
@@ -442,7 +489,7 @@ void tex_upload(Texture *t, int l) {
         uint64_t t0 = SDL_GetPerformanceCounter();
         if (t->stg_alloc) q_tex565(gl_l, (GLsizei)w, (GLsizei)h, stg, stg_busy);   // render thread: the main thread does not wait
         else {
-            glTexImage2D(GL_TEXTURE_2D, gl_l, GL_RGB, (GLsizei)w, (GLsizei)h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, stg);
+            glTexImage2D(g_up_target, gl_l, GL_RGB, (GLsizei)w, (GLsizei)h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, stg);
             *stg_busy = 0; t->stg_alloc = 1;
         }
         static unsigned nsub;
@@ -465,7 +512,7 @@ void tex_upload(Texture *t, int l) {
         }
         for (; i < w * h; i++, src += 4) o[i] = (uint16_t)((src[2] >> 3) << 11 | (src[1] >> 2) << 5 | src[0] >> 3);
         uint64_t t1 = SDL_GetPerformanceCounter();
-        glTexImage2D(GL_TEXTURE_2D, gl_l, GL_RGB, (GLsizei)w, (GLsizei)h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, o);
+        glTexImage2D(g_up_target, gl_l, GL_RGB, (GLsizei)w, (GLsizei)h, 0, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, o);
         free(o);
         double ms = 1000.0 / (double)SDL_GetPerformanceFrequency();
         conv_ms += (double)(t1 - t0) * ms; gl_ms += (double)(SDL_GetPerformanceCounter() - t1) * ms;
@@ -500,7 +547,7 @@ void tex_upload(Texture *t, int l) {
         if(packed) {
             sh4_dxt1_rgb565(src,packed,w,h);
             uint64_t decoded=prep_t0?SDL_GetPerformanceCounter():0;
-            glTexImage2D(GL_TEXTURE_2D,gl_l,GL_RGB,(GLsizei)w,(GLsizei)h,0,GL_RGB,GL_UNSIGNED_SHORT_5_6_5,packed);
+            glTexImage2D(g_up_target,gl_l,GL_RGB,(GLsizei)w,(GLsizei)h,0,GL_RGB,GL_UNSIGNED_SHORT_5_6_5,packed);
             if(gl_l==0 || !t->tfmt)t->tfmt=1;
             if(prep_t0) {
                 double k=1000.0/SDL_GetPerformanceFrequency();
@@ -540,7 +587,7 @@ void tex_upload(Texture *t, int l) {
     if (gl_l == 0 || !t->tfmt) t->tfmt = tex32 ? 3 : !alpha ? 1 : (!a16 && w <= alpha32_max && h <= alpha32_max) ? 3 : 2;
     alpha = t->tfmt != 1;   // every level of a texture shares level 0's format
     if (t->tfmt == 3) {
-        glTexImage2D(GL_TEXTURE_2D, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+        glTexImage2D(g_up_target, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
         if (prep_t0) {
             uint64_t end = SDL_GetPerformanceCounter();
             double scale = 1000.0 / (double)SDL_GetPerformanceFrequency();
@@ -569,7 +616,7 @@ void tex_upload(Texture *t, int l) {
         }
     }
     uint64_t prep_t2 = prep_t0 ? SDL_GetPerformanceCounter() : 0;
-    glTexImage2D(GL_TEXTURE_2D, gl_l, alpha ? GL_RGBA : GL_RGB, (GLsizei)w, (GLsizei)h, 0, alpha ? GL_RGBA : GL_RGB,
+    glTexImage2D(g_up_target, gl_l, alpha ? GL_RGBA : GL_RGB, (GLsizei)w, (GLsizei)h, 0, alpha ? GL_RGBA : GL_RGB,
                  alpha ? GL_UNSIGNED_SHORT_4_4_4_4 : GL_UNSIGNED_SHORT_5_6_5, tmp);
     if (prep_t0) {
         uint64_t end = SDL_GetPerformanceCounter();
@@ -579,7 +626,7 @@ void tex_upload(Texture *t, int l) {
                (prep_t1 - prep_t0) * scale, (prep_t2 - prep_t1) * scale, (end - prep_t2) * scale);
     }
 #else
-    glTexImage2D(GL_TEXTURE_2D, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
+    glTexImage2D(g_up_target, gl_l, GL_RGBA, (GLsizei)w, (GLsizei)h, 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
 #endif
     free(tmp);
 }
