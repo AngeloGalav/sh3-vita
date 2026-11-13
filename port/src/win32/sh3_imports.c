@@ -173,6 +173,7 @@ U(GetKeyState) { STDRET(1, 0); }
 U(GetMessageA) { rt_log("[stub] USER32!GetMessageA -> WM_QUIT\n"); STDRET(4, 0); }
 U(GetWindowLongA) { HOSTFN; STDRET(2, g_wl[ARG(2) & 7]); }
 U(SetWindowLongA) { HOSTFN; uint32_t o = g_wl[ARG(2) & 7]; g_wl[ARG(2) & 7] = ARG(3); STDRET(3, o); }
+uint32_t sh3_wndproc_subclass(void) { return g_wl[(uint32_t)-4 & 7]; }   // GWL_WNDPROC set by the game, for DispatchMessageA
 U(GetWindowRect) { HOSTFN; if (ARG(2)) { W32(ARG(2), 0); W32(ARG(2) + 4, 0); W32(ARG(2) + 8, 640); W32(ARG(2) + 12, 480); } STDRET(2, 1); }
 U(GetWindowThreadProcessId) { HOSTFN; if (ARG(2)) W32(ARG(2), 0x10); STDRET(2, 0x100); }
 U(InvalidateRect) { STDRET(3, 1); }

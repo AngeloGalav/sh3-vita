@@ -53,6 +53,8 @@ struct Movie {
     uint32_t graph_g, ctl_g, pos_g, ev_g, aud_g, sink_g;
     HObj *graph, *filters[5], *pins[10];
     uint32_t guest[4]; int nguest;
+    void *dec[2];                                // SH3 .000 decrypt readers (MovieDec), one per plm buffer
+    uint32_t notify_hwnd, notify_msg, notify_data;   // IMediaEventEx::SetNotifyWindow: posted once per queued event
     uint32_t renderer, rpin, mem_in, alloc;      // guest objects (alloc: host allocator)
     Samp *samp[NSAMP];
     uint32_t buf_size;
@@ -170,7 +172,11 @@ static void rpush(CPU *c, uint32_t code, uint32_t p1, uint32_t p2) {
     if (!m) return;
     SDL_LockMutex(m->lock);
     if (m->nev < 16) { m->ev[m->nev].code = code; m->ev[m->nev].p1 = p1; m->ev[m->nev].p2 = p2; m->nev++; }
+    uint32_t hwnd = m->notify_hwnd, msg = m->notify_msg, data = m->notify_data;
     SDL_UnlockMutex(m->lock);
+    // SH3 reads its movie events from its window procedure when this message arrives (EC_COMPLETE included):
+    // without it the game waits forever once a movie ends.
+    if (hwnd && msg) { void w32_post_message(uint32_t, uint32_t, uint32_t, uint32_t); w32_post_message(hwnd, msg, 0, data); }
 }
 
 // ---------- host pins (IPin) and enumerator ----------
@@ -668,7 +674,13 @@ static void movie_dec_load(plm_buffer_t *buffer, void *user) {
 }
 static void movie_dec_seek(plm_buffer_t *buffer, size_t pos, void *user) { (void)buffer; ((MovieDec *)user)->pos = pos; }
 static size_t movie_dec_tell(plm_buffer_t *buffer, void *user) { (void)buffer; return ((MovieDec *)user)->pos; }
-static plm_buffer_t *movie_dec_file(const char *host) {
+static void movie_dec_free(void *p) {
+    MovieDec *d = p;
+    if (!d) return;
+    if (d->f) fclose(d->f);
+    free(d);
+}
+static plm_buffer_t *movie_dec_file(const char *host, void **out) {
     FILE *f = fopen(host, "rb");
     if (!f) return NULL;
     uint8_t *hdr = malloc(MOVIE000_HEADER_SIZE);
@@ -680,7 +692,10 @@ static plm_buffer_t *movie_dec_file(const char *host) {
     free(hdr);
     fseek(f, 0, SEEK_END);
     d->size = (size_t)ftell(f) - MOVIE000_HEADER_SIZE;
-    return plm_buffer_create_with_callbacks(movie_dec_load, movie_dec_seek, movie_dec_tell, d->size, d);   // leaks FILE/MovieDec per movie (small)
+    plm_buffer_t *b = plm_buffer_create_with_callbacks(movie_dec_load, movie_dec_seek, movie_dec_tell, d->size, d);
+    if (!b) { movie_dec_free(d); return NULL; }
+    *out = d;   // freed by movie_free_decoders (pl_mpeg does not own callback state)
+    return b;
 }
 static void movie_cached_load(plm_buffer_t *buffer, void *user) {
     if (buffer->discard_read_bytes) plm_buffer_discard_read_bytes(buffer);
@@ -695,7 +710,8 @@ static size_t movie_cached_tell(plm_buffer_t *buffer, void *user) {
     (void)buffer; return ((MovieCursor *)user)->pos;
 }
 static plm_buffer_t *movie_input(Movie *m, const char *host, int index) {
-    { const char *e = strrchr(host, '.'); if (e && !strcasecmp(e, ".000")) return movie_dec_file(host); }
+    { const char *e = strrchr(host, '.');
+      if (e && !strcasecmp(e, ".000")) { int k = index & 1; movie_dec_free(m->dec[k]); m->dec[k] = NULL; return movie_dec_file(host, &m->dec[k]); } }
     if (!m->stream) return movie_file(host);
     m->cursor[index].source = m->stream; m->cursor[index].pos = 0;
     return plm_buffer_create_with_callbacks(movie_cached_load, movie_cached_seek,
@@ -742,6 +758,7 @@ static void movie_free_decoders(Movie *m) {
     if (m->aud) plm_audio_destroy(m->aud);
     if (m->adm) plm_demux_destroy(m->adm);
     m->plm = NULL; m->aud = NULL; m->adm = NULL;
+    for (int k = 0; k < 2; k++) { movie_dec_free(m->dec[k]); m->dec[k] = NULL; }   // after the buffers that read through them
     movie_stream_close(m->stream); m->stream = NULL;
     movie_free_output(m);
 }
@@ -937,7 +954,14 @@ M(ev, WaitComp) { HOSTFN; W32(ARG(3), 0); STDRET(3, VFW_E_TIMEOUT); }
 M(ev, Free) { STDRET(4, HR_OK); }
 // IMediaEventEx tail (SH3 queries 56a868c0 and calls SetNotifyWindow): SetNotifyWindow(this,hwnd,msg,data),
 // SetNotifyFlags(this,flags), GetNotifyFlags(this,&flags)
-M(ev, SetNotifyWindow) { HOSTFN; rt_log("[movie-gr] SetNotifyWindow(hwnd=%08x msg=%08x data=%08x)\n", ARG(2), ARG(3), ARG(4)); STDRET(4, HR_OK); }
+M(ev, SetNotifyWindow) {
+    HOSTFN; MV;
+    rt_log("[movie-gr] SetNotifyWindow(hwnd=%08x msg=%08x data=%08x)\n", ARG(2), ARG(3), ARG(4));
+    SDL_LockMutex(m->lock);
+    m->notify_hwnd = ARG(2); m->notify_msg = ARG(3); m->notify_data = ARG(4);
+    SDL_UnlockMutex(m->lock);
+    STDRET(4, HR_OK);
+}
 M(ev, GetNotifyFlags) { HOSTFN; if (ARG(2)) W32(ARG(2), 0); STDRET(2, HR_OK); }
 static const gfn ev_vt[] = {any_QI, any_AddRef, any_Release, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Disp, ev_GetHandle,
     ev_GetEvent, ev_WaitComp, pos_Gen2, pos_Gen2, ev_Free, ev_SetNotifyWindow, pos_Gen2 /*SetNotifyFlags*/, ev_GetNotifyFlags};
