@@ -450,7 +450,10 @@ M(dev, GetDeviceState) {
         static int combos = -1;
         if (combos < 0) {
             const char *v = getenv("SH4_PAD_COMBOS");
-#ifdef __vita__
+#ifdef SH3_PORT
+            combos = 0;   // SH4's L+square / R+circle chords: SH3 has no such actions (its buttons 9/10 are pause/sub-equip)
+            (void)v;
+#elif defined(__vita__)
             combos = !v || !strcmp(v, "1");
 #else
             combos = v && !strcmp(v, "1");
@@ -459,10 +462,15 @@ M(dev, GetDeviceState) {
         static Sh4PadButtons button_state;
         int button_context = menu ? SH4_PAD_OPTIONS : cur ? SH4_PAD_POINTER : SH4_PAD_GAMEPLAY;
         unsigned mapped = sh4_pad_buttons(&button_state, raw_buttons, button_context, combos);
-        {   // While a movie plays, confirm (button 2, Cross) also acts as the game's skip button (8, Start); same arming as the keyboard.
+        {   // While a movie plays, confirm (Cross: button 2 in SH4, 1 in SH3) also acts as the game's skip button (8, Start); same arming as the keyboard.
             static int armed;
+#ifdef SH3_PORT
+            const unsigned confirm = 2u;
+#else
+            const unsigned confirm = 4u;
+#endif
             if (!g_movie_w) armed = 0;
-            else if (!(mapped & 4u)) armed = 1;
+            else if (!(mapped & confirm)) armed = 1;
             else if (armed) mapped |= 1u << 8;
         }
         for (int i = 0; i < 12 && 48u + (uint32_t)i < n; i++) {

@@ -32,12 +32,26 @@ static inline unsigned sh4_pad_buttons(Sh4PadButtons *state, unsigned raw, int c
             }
         }
     }
+#ifdef SH3_PORT
+    // SH3's pad defaults (table 0x7214e4, applied when there is no key.ini; sh3_port_ui.c nat_pad_defaults swaps
+    // dash and light): button 0 map, 1 action/enter, 2 light/cancel, 3 dash, 4 search view (camera), 5 ready (aim),
+    // 8 item/skip, 9 pause. SDL names the Vita's buttons by position: A cross, B circle, X square, Y triangle.
+    // Vita layout: triangle map, cross action/confirm (R + cross attacks), circle cancel/flashlight, square run,
+    // L camera, R aim, START inventory, SELECT pause.
+    static const int buttons[12] = {
+        SDL_CONTROLLER_BUTTON_Y, SDL_CONTROLLER_BUTTON_A,
+        SDL_CONTROLLER_BUTTON_B, SDL_CONTROLLER_BUTTON_X,
+        SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
+        -1, -1, SDL_CONTROLLER_BUTTON_START, SDL_CONTROLLER_BUTTON_BACK, -1, -1
+    };
+#else
     static const int buttons[12] = {
         SDL_CONTROLLER_BUTTON_X, SDL_CONTROLLER_BUTTON_B,
         SDL_CONTROLLER_BUTTON_A, SDL_CONTROLLER_BUTTON_Y,
         SDL_CONTROLLER_BUTTON_LEFTSHOULDER, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER,
         -1, -1, SDL_CONTROLLER_BUTTON_START, -1, -1, SDL_CONTROLLER_BUTTON_BACK
     };
+#endif
     unsigned result = 0;
     for (unsigned i = 0; i < 12; ++i)
         if (buttons[i] >= 0 && (raw & (1u << buttons[i]))) result |= 1u << i;

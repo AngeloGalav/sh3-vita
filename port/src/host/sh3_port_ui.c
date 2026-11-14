@@ -175,3 +175,21 @@ void nat_title_menu(CPU *c) {
     c->esp = sp;
     c->eax = r;
 }
+
+// FUN_005f3460 wrapper: builds the default input lists when there is no key.ini (pad list [0xbcc740], count
+// [0xbcc744], pairs of (action id, input code), button n = code 12 + n; copied from 0x7214e4). The Vita layout
+// (dx/pad_mapping.h) wants run on square and the flashlight with cancel on circle: swap the default buttons of
+// dash (action 6, button 2) and light (action 7, button 3). A key.ini, once the game has written one, wins.
+void F_005f3460_orig(CPU *c);
+void nat_pad_defaults(CPU *c) {
+    HOSTFN;
+    F_005f3460_orig(c);
+    uint32_t list = R32(0xbcc740), n = R32(0xbcc744);
+    if (!list) return;
+    for (uint32_t i = 0; i < n && i < 64; i++) {
+        uint8_t a = R8(list + 2 * i), code = R8(list + 2 * i + 1);
+        if (a == 6 && code == 14) W8(list + 2 * i + 1, 15);        // dash: button 2 -> 3
+        else if (a == 7 && code == 15) W8(list + 2 * i + 1, 14);   // light: button 3 -> 2
+    }
+    rt_log("[port-ui] pad defaults: dash on button 3, light on button 2\n");
+}
