@@ -1,4 +1,4 @@
-<h1 align="center">sh3-port: Silent Hill 3 for PlayStation Vita</h1>
+<h1 align="center">sh3-vita: Silent Hill 3 for PlayStation Vita</h1>
 
 <p align="center">
   An experimental static-recompilation port of the 2003 PC game. Version 0.0.1.<br>
@@ -11,9 +11,9 @@
   <img alt="Status: early console tests" src="https://img.shields.io/badge/console-early%20tests-c98a2b?style=flat-square">
 </p>
 
-sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler translates the game's `sh3.exe` (x86) to C, and a Win32 / Direct3D 8 / DirectInput / DirectSound compatibility layer runs it over [vitaGL](https://github.com/Rinnegatamante/vitaGL) on the Vita. It is built on [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, the Silent Hill 4 port that came first, and uses [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev as its rendering reference.
+sh3-vita runs Silent Hill 3 from the PC version's own data. Unlike [sh2-vita](https://github.com/AngeloGalav/sh2-vita), which is a native port that rebuilds Silent Hill 2 as native code on the Vita's CPU and GPU, this is a static recompilation: a recompiler translates the game's `sh3.exe` (x86) to C, and a Win32 / Direct3D 8 / DirectInput / DirectSound compatibility layer runs it over [vitaGL](https://github.com/Rinnegatamante/vitaGL) on the Vita. It is built on [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, the Silent Hill 4 port that came first, and uses [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev as its rendering reference.
 
-**sh3-port contains no game data.** You need your own copy of the 2003 PC game.
+**sh3-vita contains no game data.** You need your own copy of the 2003 PC game.
 
 > [!WARNING]
 > 0.0.1 is a development snapshot, not a finished release. It has been played on a real PS Vita through the opening and the first areas only. See [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) before trying it.
