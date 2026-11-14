@@ -8,7 +8,7 @@
 <p align="center">
   <img alt="Platform: PS Vita" src="https://img.shields.io/badge/platform-PS%20Vita-2f5da8?style=flat-square">
   <a href="LICENSE"><img alt="License: GPLv3" src="https://img.shields.io/badge/license-GPLv3-5b7083?style=flat-square"></a>
-  <img alt="Status: not run on a console" src="https://img.shields.io/badge/console-untested-b5483a?style=flat-square">
+  <img alt="Status: early console tests" src="https://img.shields.io/badge/console-early%20tests-c98a2b?style=flat-square">
 </p>
 
 sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler translates the game's `sh3.exe` (x86) to C, and a Win32 / Direct3D 8 / DirectInput / DirectSound compatibility layer runs it over [vitaGL](https://github.com/Rinnegatamante/vitaGL) on the Vita. It is built on [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, the Silent Hill 4 port that came first, and uses [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev as its rendering reference.
@@ -16,17 +16,18 @@ sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler transla
 **sh3-port contains no game data.** You need your own copy of the 2003 PC game.
 
 > [!WARNING]
-> Nothing here has been confirmed on a real PS Vita. Everything was tested on a PC (Linux, Docker, software GL) and in the Vita3K+ emulator, and emulator results are not console results. 0.0.1 is a development snapshot, not a playable release.
+> 0.0.1 is a development snapshot, not a finished release. It has been played on a real PS Vita through the opening and the first areas only. See [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) before trying it.
 
 ## What it does
 
-Tested on a PC only (Docker image `sh3host:local`, Mesa software GL, dummy audio):
+On a real PS Vita (November 2026, extended memory budget, `libshacccg.suprx` installed):
 
-- Boots through the Konami logo, content warning, the port's credits page and the title menu
-- New Game: the in-engine intro, then the first playable room (`tpf1`, Lakeside Amusement Park entrance); Heather walks (arrows / WASD) and stops at walls
-- Renders that room like sh3-nx in the views compared so far, including the local spotlights (evidence, not ground truth)
-- A "Textures" option (Performance / Balanced / High) and a working Resolution list
-- The opening movie `op.000` plays in-game on the PC build, through the game's own DirectShow-style graph. Only the first ~90 s of 192 s were checked, and the end, skipping, the other six movies and audible audio are untested. The source change for this was still uncommitted when this was written.
+- Boots through the Konami logo, the content warning and the port's credits page, plays the opening movie `op.000` (about 20 fps, no stutter) and reaches the title menu (New Game / Load / Options)
+- New Game: the intro at Lakeside Amusement Park and the first areas, with music and cutscene audio
+- Renders at the Vita's native 960x544 in widescreen; the frame rate is capped at 30 fps and holds it most of the time (heavier spots drop to about 20)
+- A "Textures" option (Performance / Balanced / High) and the Options pages switchable with L / R
+
+Built and checked on the PC but not yet heard or seen on the console: in-game sound effects (footsteps, doors, items), the Vita button layout below, the credits page before the opening movie and the title menu without Exit.
 
 ## Install
 
@@ -40,11 +41,28 @@ Tested on a PC only (Docker image `sh3host:local`, Mesa software GL, dummy audio
 1. Apply the port's byte patches (widescreen, title menu without Exit) to a copy of your executable: `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json` (checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`; run it on an unpatched copy).
 2. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
 3. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
-4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
+4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`): this build plays them itself.
 
 Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
 
 With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
+
+## Controls
+
+| Button | In game | In menus |
+|---|---|---|
+| Cross | Action / examine; with R held: attack | Confirm |
+| Circle | Flashlight on / off | Back |
+| Square | Run (with R held: guard) | |
+| Triangle | Map | |
+| L | Camera behind Heather | Previous Options page |
+| R | Ready the weapon (aim) | Next Options page |
+| START | Inventory | Skip a movie |
+| SELECT | Pause menu | |
+| Left stick / d-pad | Move | Move the cursor |
+| Right stick | Camera | |
+
+These are the game's own pad defaults, rearranged for the Vita. If the game has written a `key.ini` to `ux0:data/sh3/`, that file wins: delete it to get this layout back.
 
 ## Options
 
@@ -65,8 +83,7 @@ The choice is applied when you confirm and is saved as `textures=0|1|2` in
 looked at on the PC with the Vita texture path emulated; its VRAM and speed cost
 on a Vita is not measured.
 
-Options → Resolution lists 640×480, 800×600 and 1024×768 (the original list
-failed to enumerate).
+Options → Configuration → Resolution shows the single 960x544 mode the port renders at.
 
 ## Status
 
@@ -78,7 +95,7 @@ What works and what is open, by milestone:
 - **J3** data formats: complete (`docs/DATA-FORMATS-SH3.md`); `tools/j3_check_all.py` re-checks every format against the documented counts
 - **J4** Direct3D 8 on Vita: census done (`docs/J4-D3D8-CENSUS.md`), translator not started
 - **J5** native decoders: ADX/AIX/AFS decoders and the `.000` demangler in `port/src/codec/` are bit-exact against the J3 tools on the host. The runtime uses only the demangler; the audio decoders are not wired in
-- **Vita build**: first tests on a real PS Vita (November 2026): boots, menus, the opening movie (about 20 fps, no stutter) and New Game into the first rooms play. Known problems on the console: sound effects missing in gameplay (music plays), 15–20 fps in gameplay, a rectangle drawn over Heather's flashlight (probably the lens flare), the Options menu tabs can't be changed with the pad. It needs the extended memory budget (set in the package) and `libshacccg.suprx`
+- **Vita build**: played on a real PS Vita (November 2026) through the opening and the first areas, widescreen 960x544, 30 fps cap. It needs the extended memory budget (set in the package) and `libshacccg.suprx`. Open problems: [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)
 
 Not confirmed: saving and loading a game, the other movies and endings, anything past the first areas, long sessions, texture VRAM cost of the Textures settings on a Vita.
 
@@ -104,7 +121,10 @@ are what the code does with the variable unset.
 | Variable | Effect |
 |---|---|
 | `SH3_NO_MOVIE=1` | Movies unavailable: the movie graph cannot be created and the game moves on. For scripted runs. |
-| `SH3_NO_CREDITS=1` | Skips the port's credits page before the title screen (scripted runs). |
+| `SH3_NO_CREDITS=1` | Skips the port's credits page before the opening movie (scripted runs). |
+| `SH3_FPS=60` | Vita: turns the 30 fps cap off (the game then swings between 60 and 20–30 fps). |
+| `SH4_INTERP=1` | Vita: turns on the frame interpolation inherited from SH4 (adds blended frames; off for SH3 because it undid the 30 fps cap). |
+| `SH3_NATVERIFY=1` | Runs the recompiled originals of the native math functions too and logs any mismatch (`[nat]`). |
 | `SH3_TEXSUB=0` | Goes back to a full `glTexImage2D` for every texture upload. Default for SH3: in-place `glTexSubImage2D` when storage of the same size and format exists. |
 | `SH3_CUBE=0` | Binds the spotlight cube-map stage as NULL, as before 2026-11-13: the warm cone of light on walls and characters disappears. Default: cube maps bound. |
 | `SH3_TEXQ=0\|1\|2` | Forces the texture quality (Performance / Balanced / High) over `sh3port.ini`. |
@@ -123,7 +143,7 @@ The in-game credits page lists the first four:
 - [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, which this port is based on
 - [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev, the rendering reference
 - [sh2-vita](https://github.com/AngeloGalav/sh2-vita) by AngeloGalav
-- The Silent Hill 3 PC Fix by Steam006 (2.8.9.1), <https://community.pcgamingwiki.com/files/file/1331>
+- [SilentHill3.WidescreenFix](https://github.com/ThirteenAG/WidescreenFixesPack) by ThirteenAG, ported for the widescreen
 - [vitaGL](https://github.com/Rinnegatamante/vitaGL) and vitaShaRK by Rinnegatamante, the [VitaSDK](https://vitasdk.org/) team and [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski
 
 AI-assisted port by [AngeloGalav](https://github.com/AngeloGalav). Third-party code compiled into the port is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with texts in [LICENSES/](LICENSES/).
@@ -136,4 +156,4 @@ This is a fan project, not affiliated with or endorsed by Konami or Sony. *Silen
 
 ## AI disclosure
 
-Most of this port's code, documentation and commit messages was written with AI coding agents (Qwen Flash Next, a local model, and Claude Sonnet; Claude Opus is planned for validation), under direction from a person. Expect mistakes, and treat every claim as "checked on PC or emulator only" unless it says otherwise. The approach and much of the runtime come from sh4vita.
+Most of this port's code, documentation and commit messages was written with AI coding agents (Qwen Flash Next, a local model, Claude Sonnet and Claude Opus), under direction from a person. Expect mistakes, and treat every claim as "checked on PC only" unless it says it was seen on a console. The approach and much of the runtime come from sh4vita.
