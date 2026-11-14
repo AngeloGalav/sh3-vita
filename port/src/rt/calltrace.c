@@ -6,6 +6,9 @@
 #include "rt.h"
 #include <SDL.h>
 #define NF __attribute__((no_instrument_function))
+#ifdef SH3_PORT
+#define F_00554100 F_005f1940   // SH3: the game's frame function anchors the relative addresses
+#endif
 extern void F_00554100(CPU *c);
 extern unsigned g_frame;
 static uintptr_t main_lo, main_hi;   // main thread stack: TLS-free filter (SDL threads do not always have one)

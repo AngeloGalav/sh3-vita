@@ -335,6 +335,14 @@ if TARGET == "sh3":
     WRAPS = {
         0x5d8e80: "nat_title_mode",   # title screen mode: the port's credits page first, then the title
         0x5d80c0: "nat_title_menu",   # title menu rows: then the port's version in the bottom left corner
+        # Hot math of the static runtime (console profile 2026-11-14), src/host/sh3_natives.c; the originals
+        # stay as F_xxx_orig for SH3_NATVERIFY=1:
+        0x662c40: "nat_crt_ftol2",       # _ftol2: ST(0) truncated to int64 in edx:eax, popped
+        0x648639: "nat_d3dx_matmul",     # D3DXMatrixMultiply
+        0x6483a7: "nat_d3dx_vec3xform",  # D3DXVec3Transform
+        0x648491: "nat_d3dx_vec4xform",  # D3DXVec4Transform
+        0x648432: "nat_d3dx_vec3normal", # D3DXVec3TransformNormal
+        0x64856f: "nat_d3dx_vec3norm",   # D3DXVec3Normalize (the game's rsqrt table at 0x726820)
     }
 
 
