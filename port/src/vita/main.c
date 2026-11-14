@@ -23,6 +23,12 @@
 #include <errno.h>
 
 int _newlib_heap_size_user = SH4_HOST_HEAP_MB * 1024 * 1024;
+#ifdef SH3_PORT
+// SceLibc heap: the runtime shader compiler (libshacccg) allocates from it, not from newlib. With the small default,
+// the title's shaders compiled on the console but the first room's vertex shaders came back NULL with no diagnostic
+// (vitaGL then crashed in set_default_attrib_binding). The extended budget leaves ~110 MB unused.
+unsigned int sceLibcHeapSize = 32 * 1024 * 1024;
+#endif
 unsigned int sceUserMainThreadStackSize = 4 * 1024 * 1024;
 
 #ifdef SH3_PORT
