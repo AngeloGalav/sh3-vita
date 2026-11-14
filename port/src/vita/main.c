@@ -54,7 +54,7 @@ int plat_pump_events(void) {
     rt_vita_lifecycle_poll();
     return 0;
 }
-// SH4_SHOT=N[,M...]: writes ux0:data/sh4/shot_N.tga (image displayed at present N) to see the rendering without a hardware capture.
+// SH4_SHOT=N[,M...]: writes DATA_DIR/shot_N.tga (image displayed at present N) to see the rendering without a hardware capture.
 void plat_shot_raw(const char *path);
 static void take_shot(unsigned n) {
     char path[64];
@@ -68,7 +68,7 @@ void plat_gl_swap(void) {
     rt_text_check();
     { static const char *sh; static int sh_init; if (!sh_init) { sh = getenv("SH4_SHOT"); sh_init = 1; }
       if (sh) for (const char *q = sh; *q;) { unsigned v = (unsigned)strtoul(q, (char **)&q, 10); if (v == g_swap_n + 1) take_shot(v); if (*q == ',') q++; else if (*q) q++; } }
-    // Live capture: create ux0:data/sh4/shotnow (FTP) -> shot_<swap>.tga is written within ~1 s, then the trigger is deleted.
+    // Live capture: create DATA_DIR/shotnow (FTP) -> shot_<swap>.tga is written within ~1 s, then the trigger is deleted.
     static int poll_flags = -1;
     if (poll_flags < 0) poll_flags = ((!getenv("SH4_LIVE") && !getenv("SH4_CTL")) || getenv("SH4_POLL_DISABLE") ? 1 : 0) | (getenv("SH4_POLL_TRACE") ? 2 : 0);
     if (!(poll_flags & 1) && g_swap_n % 30 == 0) {
@@ -227,14 +227,18 @@ static void boot_check_index(void) {
              (unsigned long long)report.expected_size, (unsigned long long)report.actual_size);
     const char *m[] = {"GAME FILE CHECK FAILED", "", report.problem[0] ? report.problem : "files.idx is missing or unsupported.",
                        result == -3 ? detail : "The file inventory could not be validated.", "",
+#ifdef SH3_PORT
+                       "Re-copy the game files to " DATA_DIR "/.", "Do not remove the save folder.", "See sh3log.txt for details."};
+#else
                        "Re-copy files from your prepared sh4 folder.", "Do not remove the save folder.", "See sh4log.txt for details."};
+#endif
     boot_error(m, 8);
     sceKernelExitProcess(0);
 }
 static void boot_checks(void) {
     if (!file_exists(DATA_DIR "/" GAME_EXE) || !file_exists(DATA_DIR "/data")) {
 #ifdef SH3_PORT
-        static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh3-vita/", "", "Copy sh3.exe and the data folder", "from your own copy of the game", "to ux0:data/sh3/ (see README)."};
+        static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh3-vita/", "", "Copy sh3.exe and the data folder", "from your own copy of the game", "to ux0:data/sh3-vita/ (see README)."};
 #else
         static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh4/", "", "Run sh4prep on your PC with your own copy", "of the game, then copy the sh4 folder", "to ux0:data/ on the Vita (see README)."};
 #endif
@@ -394,7 +398,7 @@ static void prep_native_progress(unsigned done, unsigned total) {
     }
 }
 
-// ux0:data/sh4/env.txt: one KEY=VALUE line per variable (SH4_TRACE_FRAME=439, SH4_TRACE_COPY=1...), no recompiling.
+// DATA_DIR/env.txt: one KEY=VALUE line per variable (SH4_TRACE_FRAME=439, SH4_TRACE_COPY=1...), no recompiling.
 // Read before vitaGL (some settings, like SH4_SCENES, are used for GPU initialisation).
 static void load_env_txt(void) {
     FILE *f = fopen(DATA_DIR "/env.txt", "rb");

@@ -87,7 +87,7 @@ The original `.000` movies play at about 20 fps on the Vita. Converted to MP4, t
 
 Without the `.mp4` files the built-in decoder plays the `.000` files unchanged. The converted files are derived from game data: never commit them, never share them.
 
-Logs go to `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
+Logs go to `ux0:data/sh3-vita/sh3log.txt` (earlier runs are kept as numbered copies).
 
 With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
 
@@ -128,7 +128,7 @@ Not confirmed: the other movies and endings, anything past the first areas, long
 
 ## Building and working on it
 
-The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is `docker/host-build.sh` (`port/Makefile.linux`). Several names are inherited from the SH4 port and not renamed: the CMake target `sh4`, the `SH4_*` variables and options, `sh4log.txt`. `-DSH3=OFF` builds the inherited SH4 layout, which is not maintained here.
+The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is `docker/host-build.sh` (`port/Makefile.linux`). Several names are inherited from the SH4 port and not renamed: the CMake target `sh4` and the `SH4_*` variables and options. `-DSH3=OFF` builds the inherited SH4 layout, which is not maintained here.
 
 | Path | What's in it |
 | --- | --- |

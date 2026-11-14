@@ -53,7 +53,11 @@ static int log_thread(void *arg) {
 void rt_log(const char *fmt, ...) {
     va_list ap;
     #ifndef SH4_LOG_PATH
+#ifdef SH3_PORT
+#define SH4_LOG_PATH "sh3log.txt"
+#else
 #define SH4_LOG_PATH "sh4log.txt"
+#endif
 #endif
     if (!g_logmtx) { g_drainmtx = SDL_CreateMutex(); g_logmtx = SDL_CreateMutex(); }
     if (!g_log_init_done) {

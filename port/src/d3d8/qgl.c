@@ -13,6 +13,11 @@
 #include <stdlib.h>
 #include <string.h>
 #include <arm_neon.h>
+#ifdef SH3_PORT
+#define DIAG_DIR "ux0:data/sh3-vita"   // the port's data folder (vita/main.c DATA_DIR)
+#else
+#define DIAG_DIR "ux0:data/sh4"
+#endif
 
 // Optional diagnostic supplied by the isolated renderbuffer-storage vitaGL build.
 extern int vglGetLastSceneError(void) __attribute__((weak));
@@ -264,7 +269,7 @@ static int skip_large_enabled, skip_large_active;
 static unsigned frame_words;
 static unsigned ipshot, nframe;   // SH4_IPSHOT=N: captures ip<N>_a (real N-1), _b (intermediate), _c (real N)
 void plat_shot_raw(const char *path);
-static void ip_shot(char k) { char s[64]; snprintf(s, sizeof s, "ux0:data/sh4/shot_ip%u_%c.tga", ipshot, k); plat_shot_raw(s); }
+static void ip_shot(char k) { char s[64]; snprintf(s, sizeof s, DIAG_DIR "/shot_ip%u_%c.tga", ipshot, k); plat_shot_raw(s); }
 static uint32_t *fb[2];
 static unsigned fb_cap, fb_n;
 #define UK_N 4096                      // keys per frame (power of 2)

@@ -16,6 +16,11 @@
 #include <math.h>
 #include <stdio.h>
 #include <stdarg.h>
+#ifdef SH3_PORT
+#define DIAG_DIR "ux0:data/sh3-vita"   // the port's data folder (vita/main.c DATA_DIR)
+#else
+#define DIAG_DIR "ux0:data/sh4"
+#endif
 
 #ifndef GL_DEPTH24_STENCIL8
 #define GL_DEPTH24_STENCIL8 0x88F0
@@ -1038,7 +1043,7 @@ static int trace_now(void) {   // SH4_TRACE_FRAME=N: detailed trace of frame N
 
 static void draw_impl(Device *d, uint32_t prim, uint32_t first, uint32_t nverts, uint32_t nprims, const void *indices,
                       int index32, uint32_t min_index, const uint8_t *up, uint32_t up_stride, const uint8_t *const *inl);
-// Hot settings (diagnostics, Vita): ux0:data/sh4/ctl.txt re-read every 30 frames, one line per variant "FRAME tokens..."
+// Hot settings (diagnostics, Vita): <data folder>/ctl.txt re-read every 30 frames, one line per variant "FRAME tokens..."
 // (the last one with FRAME <= current frame applies; no number = 0). Tokens: skip=hex,hex (VS handles whose draws are
 // ignored), skipn=N (draws with fewer than N indices ignored), skipall=1, gpufin=0|1. Logs the render thread's active time per window.
 #ifdef __vita__
@@ -1072,9 +1077,9 @@ static void mem_snap(int k) {
         rt_log("[snap] %u candidates\n", n);
     }
 }
-// ctl dump=N: writes the game data/bss (0x5c0000..0x1300000) to ux0:data/sh4/gdump_N.bin for an offline diff with full values (tools/dump_diff.py).
+// ctl dump=N: writes the game data/bss (0x5c0000..0x1300000) to <data folder>/gdump_N.bin for an offline diff with full values (tools/dump_diff.py).
 static void mem_dump(int k) {
-    char fn[64]; snprintf(fn, sizeof fn, "ux0:data/sh4/gdump_%d.bin", k);
+    char fn[64]; snprintf(fn, sizeof fn, DIAG_DIR "/gdump_%d.bin", k);
     FILE *f = fopen(fn, "wb");
     if (!f) { rt_log("[dump] cannot open %s\n", fn); return; }
     size_t total = 0, step = 65536, n = 0x1300000u - SNAP_LO;
@@ -1087,7 +1092,7 @@ static void ctl_poll(void) {
     static unsigned cur = ~0u;
     static uint32_t w0, i0;
     memset(txt, 0, sizeof txt);
-    FILE *f = fopen("ux0:data/sh4/ctl.txt", "r");
+    FILE *f = fopen(DIAG_DIR "/ctl.txt", "r");
     if (!f) return;
     size_t n = fread(txt, 1, sizeof txt - 1, f); txt[n] = 0; fclose(f);
     uint32_t w, i;

@@ -13,6 +13,11 @@
 #include "input_gate.h"
 #ifdef __vita__
 #include <psp2/touch.h>
+#ifdef SH3_PORT
+#define DIAG_DIR "ux0:data/sh3-vita"   // the port's data folder (vita/main.c DATA_DIR)
+#else
+#define DIAG_DIR "ux0:data/sh4"
+#endif
 #endif
 
 typedef struct { ComObj com; } DInput;
@@ -267,9 +272,9 @@ M(dev, GetDeviceState) {
             static int live = -1; if (live < 0) live = getenv("SH4_LIVE") != NULL;   // remote-play tooling (tools/live.ps1): off unless SH4_LIVE=1
             if (live && now - lastpoll >= 40) {
                 lastpoll = now;
-                FILE *kf = fopen("ux0:data/sh4/key.txt", "r");
+                FILE *kf = fopen(DIAG_DIR "/key.txt", "r");
                 if (kf) {
-                    char kb[80] = {0}; size_t kn = fread(kb, 1, sizeof kb - 1, kf); kb[kn] = 0; fclose(kf); remove("ux0:data/sh4/key.txt");
+                    char kb[80] = {0}; size_t kn = fread(kb, 1, sizeof kb - 1, kf); kb[kn] = 0; fclose(kf); remove(DIAG_DIR "/key.txt");
                     char *c = kb;
                     for (int i = 0; i < 4 && *c; i++) { char *e; pk[i] = (unsigned)strtoul(c, &e, 16); if (e == c) break; c = e; pu[i] = now + (unsigned)strtoul(c, &e, 10); c = e; }
                 }

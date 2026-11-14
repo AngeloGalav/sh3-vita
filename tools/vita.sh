@@ -106,7 +106,7 @@ pull)
 	got=0
 	for f in $(names "$DATA"); do
 		case "$f" in
-		sh4log*|env.txt|sh3port.ini|disp.ini|shot_*.tga|ctl.txt|*.log)
+		sh3log*|sh4log*|env.txt|sh3port.ini|disp.ini|shot_*.tga|ctl.txt|*.log)
 			if ftp -f "$URL/$DATA/$f" -o "$OUT/$f" 2>/dev/null; then echo "got $f"; got=$((got + 1)); else rm -f "$OUT/$f"; fi ;;
 		esac
 	done

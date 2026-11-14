@@ -29,5 +29,5 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 - **Controls file:** if the game has written `ux0:data/sh3-vita/key.ini`, its bindings replace the port's layout. Delete it to get the default layout back.
 - **Resolution:** the game always renders at 960x544; the Options resolution row shows only that mode.
 - **First launch:** the shaders are compiled on the console the first time each one is needed, so the first minutes stutter more than later runs (the compiled shaders are kept in `ux0:data/sh3-vita/shc-r1`).
-- **Logs:** `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from the SH4 port). Include it when reporting a problem.
+- **Logs:** `ux0:data/sh3-vita/sh3log.txt`. Include it when reporting a problem.
 - **Vita3K:** the emulator is useful for some checks but does not behave like the console here; results from it are not console results.
