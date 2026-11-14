@@ -1,26 +1,27 @@
 # Known issues
 
-State of the PS Vita build as of 14 November 2026 (version 0.0.1 plus the changes after it). "Console" means
+State of the PS Vita build as of 15 November 2026 (version 0.0.1 plus the changes after it). "Console" means
 seen on a real PS Vita; "PC" means the Linux test build only.
 
 ## Open
 
 | Issue | Where | Notes |
 |---|---|---|
-| Dark rectangle over Heather's flashlight | Console | The lens flare. It is drawn with the right state and looks correct on the PC; on the Vita its additive blend appears to be lost, so the mostly black flare texture covers the scene. Under investigation. |
-| Below 30 fps in heavier spots | Console | The 30 fps cap holds most of the time; some areas need ~35–47 ms of game code per frame and run at 17–20 fps. Loading spots drop briefly. |
-| Movies at about 20 fps from the original `.000` files | Console | The game copies every frame into its 512x512 movie texture and the port re-uploads it each frame. Converting the movies to MP4 (README, Install) plays them with the hardware decoder at 30 fps (console: the opening movie). |
-| MP4 movies: only the opening checked | Console | Not yet tested through the MP4 path: the end of a movie and the game moving on, skipping, the other six movies, a full-length A/V sync check, and fades/overlays, which are drawn under the video. The MP4 player keeps 32 MB of video memory aside; its effect in heavy areas is not measured. |
+| Lens flares not rendered properly | Console | Especially the flashlight's: a dark rectangle where the glow should be. The flare is drawn with the right state and looks correct on the PC; on the Vita its additive blend appears to be lost, so the mostly black flare texture covers the scene. Under investigation. |
+| Performance: 20 to 30 fps depending on the area | Console | The 30 fps cap holds in lighter areas; heavier ones need ~35–47 ms of game code per frame and run at about 20 fps. Loading spots drop briefly. |
+| Movies at about 20 fps from the original `.000` files | Console | The game copies every frame into its 512x512 movie texture and the port re-uploads it each frame. Convert the movies to MP4 (README, Install): the hardware decoder plays them at 30 fps. |
+| MP4 movies: fades drawn under the video | Console | Fades and overlays the game draws over a movie end up under the MP4 video. The MP4 player keeps 32 MB of video memory aside. |
 | Jagged edges | Console | No anti-aliasing: everything is drawn into off-screen buffers without multisampling. |
-| Room sound effects play "dry" | PC | Footsteps, doors and items are audible again (PC), but the DirectSound effect the game asks for on them is not emulated. Not yet heard on the console. |
-| Saving and loading a game | Console | Not tested yet. |
+| Room sound effects play "dry" | Console | Footsteps, doors and items play, but the DirectSound effect the game asks for on them is not emulated. |
 | Most of the game | Console | Only the opening and the first areas have been played. Other movies, endings, later areas and long sessions are unconfirmed. |
 
-## Built but waiting for a console test
+## Confirmed on the console (15 November 2026)
 
-- In-game sound effects (footsteps, doors, items): fixed on the PC, where they were silent too.
-- The Vita button layout described in the README (cross confirms, circle goes back and switches the flashlight, square runs, triangle opens the map, SELECT pauses).
+- Movies at 30 fps through the MP4 path.
 - The credits page before the opening movie, and the title menu without Exit.
+- The Vita button layout described in the README.
+- In-game sound effects (footsteps, doors, items).
+- Saving and loading a game.
 
 ## Things to know
 

@@ -22,32 +22,19 @@ sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler transla
 
 On a real PS Vita (November 2026, extended memory budget, `libshacccg.suprx` installed):
 
-- Boots through the Konami logo, the content warning and the port's credits page, plays the opening movie (about 20 fps from `op.000`; 30 fps with picture and sound from a converted `op.mp4`, see Install) and reaches the title menu (New Game / Load / Options)
-- New Game: the intro at Lakeside Amusement Park and the first areas, with music and cutscene audio
-- Renders at the Vita's native 960x544 in widescreen; the frame rate is capped at 30 fps and holds it most of the time (heavier spots drop to about 20)
+- Boots through the Konami logo, the content warning and the port's credits page, then plays the opening movie at 30 fps with picture and sound from a converted `op.mp4` (see Install; about 20 fps from the original `op.000`) and reaches the title menu (New Game / Load / Options, no Exit)
+- New Game: the intro at Lakeside Amusement Park and the first areas, with music, cutscene audio and in-game sound effects (footsteps, doors, items)
+- The Vita button layout below
+- Saving and loading a game
+- Renders at the Vita's native 960x544 in widescreen, with the frame rate capped at 30 fps
 - A "Textures" option (Performance / Balanced / High) and the Options pages switchable with L / R
 
-Built and checked on the PC but not yet heard or seen on the console: in-game sound effects (footsteps, doors, items), the Vita button layout below, the credits page before the opening movie and the title menu without Exit.
+## Known issues
 
-## Install
+- Lens flares, especially the one from Heather's flashlight, are not rendered properly yet (a dark rectangle where the glow should be).
+- Performance can still be improved: depending on the area the game runs between 20 and 30 fps.
 
-0.0.1 ships no pre-built VPK, and none of these steps has been verified on a console. You need:
-
-- a PS Vita with custom firmware
-- `ur0:data/libshacccg.suprx`, the system's shader compiler, which the port compiles its shaders with. This project neither supplies nor links to it
-- the 2003 PC release of Silent Hill 3: `sh3.exe` (SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`) and its `data` folder. Other builds are not supported
-- on your computer: Docker, and Python 3 for the recompiler
-
-1. Apply the port's byte patches (widescreen, title menu without Exit) to a copy of your executable: `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json` (checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`; run it on an unpatched copy).
-2. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
-3. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
-4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3-vita/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`) unless you convert them as below: a converted `.mp4` can then replace its `.000`.
-
-Optional, for full-rate movies on the Vita: `python3 tools/convert_movies.py "<your game>/data/movie"` (needs ffmpeg and ffprobe) demangles each `.000` with the verified reference algorithm and encodes an MP4 (H.264 High level 3.1, yuv420p + AAC-LC 48 kHz stereo, duration verified) next to it. Copy those `.mp4` files to `ux0:data/sh3-vita/data/movie/` and the port plays them with the Vita's hardware video decoder (sceAvPlayer) instead of decoding in software: steady 30 fps and clean audio even when the memory card reads slowly. Without the files the built-in decoder is used unchanged. The converted files are derived from game data: never commit them, never share them.
-
-Logs go to `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
-
-With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
+More detail, and what has not been tested yet: [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
 
 ## Controls
 
@@ -59,12 +46,50 @@ With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP,
 | Triangle | Map | |
 | L | Camera behind Heather | Previous Options page |
 | R | Ready the weapon (aim) | Next Options page |
-| START | Inventory | Skip a movie |
+| START | Inventory | Skip a movie (Cross skips too) |
 | SELECT | Pause menu | |
 | Left stick / d-pad | Move | Move the cursor |
 | Right stick | Camera | |
 
-These are the game's own pad defaults, rearranged for the Vita. If the game has written a `key.ini` to `ux0:data/sh3-vita/`, that file wins: delete it to get this layout back.
+Checked on a real Vita. These are the game's own pad defaults, rearranged for the Vita. If the game has written a `key.ini` to `ux0:data/sh3-vita/`, that file wins: delete it to get this layout back.
+
+## Install
+
+There is no pre-built VPK: you build it on your PC from your own copy of the game. You need:
+
+- a PS Vita with custom firmware, VitaShell, and `ur0:data/libshacccg.suprx` (the system's shader compiler, which the port compiles its shaders with; this project neither supplies nor links to it)
+- the 2003 PC release of Silent Hill 3: `sh3.exe` (SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`) and its `data` folder. Other builds are not supported
+- on your PC: Docker, Python 3, [Ghidra](https://ghidra-sre.org/) 12.x with JDK 21 (once, to list the exe's functions), and ffmpeg/ffprobe for the movies
+
+### 1. Build the VPK
+
+From the repository root:
+
+1. List the executable's functions with Ghidra (once; a few minutes):
+   `"$GHIDRA_INSTALL_DIR/support/analyzeHeadless" /tmp/sh3-ghidra sh3 -import <your sh3.exe> -scriptPath re/ghidra -postScript ExportFunctions.java re/out/functions-sh3.json -deleteProject`
+2. Apply the port's byte patches (widescreen, title menu without Exit) to a copy of the executable:
+   `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json`
+   It checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`. Run it on an unpatched copy.
+3. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`; a minute or two).
+4. Build the package: `docker/build-vita.sh`. The first run builds the Vita SDK image (5–10 minutes); the result is `build/sh3.vpk` (title ID `SILH00003`).
+5. Copy `build/sh3.vpk` to the Vita (for example to `ux0:data/` with VitaShell's FTP) and install it from VitaShell.
+6. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3-vita/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
+
+`game/`, `re/out/` and `port/gen-sh3/` are derived from the game: they are ignored by Git and must never be shared.
+
+### 2. Convert the movies (recommended)
+
+The original `.000` movies play at about 20 fps on the Vita. Converted to MP4, they play with the Vita's hardware video decoder at a steady 30 fps:
+
+1. Make sure `ffmpeg` and `ffprobe` are on your PATH.
+2. Run `python3 tools/convert_movies.py "<your game>/data/movie"`. It decodes each `.000` with the verified reference algorithm and writes `<name>.mp4` next to it (H.264 High level 3.1, yuv420p, AAC-LC 48 kHz stereo; the duration is checked against the source). All seven movies take a few minutes. `--only op` converts one movie, `--out <folder>` writes elsewhere, `--check` only verifies the sources.
+3. Copy the `.mp4` files to `ux0:data/sh3-vita/data/movie/` on the Vita, next to the `.000` files. Once a movie has its `.mp4` there, its `.000` can be deleted to save space (the port stands the `.mp4` in for the game's own file checks).
+
+Without the `.mp4` files the built-in decoder plays the `.000` files unchanged. The converted files are derived from game data: never commit them, never share them.
+
+Logs go to `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
+
+With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
 
 ## Options
 
@@ -99,7 +124,7 @@ What works and what is open, by milestone:
 - **J5** native decoders: ADX/AIX/AFS decoders and the `.000` demangler in `port/src/codec/` are bit-exact against the J3 tools on the host. The runtime uses only the demangler; the audio decoders are not wired in
 - **Vita build**: played on a real PS Vita (November 2026) through the opening and the first areas, widescreen 960x544, 30 fps cap. It needs the extended memory budget (set in the package) and `libshacccg.suprx`. Open problems: [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md)
 
-Not confirmed: saving and loading a game, the other movies and endings, anything past the first areas, long sessions, texture VRAM cost of the Textures settings on a Vita.
+Not confirmed: the other movies and endings, anything past the first areas, long sessions, texture VRAM cost of the Textures settings on a Vita.
 
 ## Building and working on it
 
