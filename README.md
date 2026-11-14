@@ -75,9 +75,9 @@ What works and what is open, by milestone:
 - **J3** data formats: complete (`docs/DATA-FORMATS-SH3.md`); `tools/j3_check_all.py` re-checks every format against the documented counts
 - **J4** Direct3D 8 on Vita: census done (`docs/J4-D3D8-CENSUS.md`), translator not started
 - **J5** native decoders: ADX/AIX/AFS decoders and the `.000` demangler in `port/src/codec/` are bit-exact against the J3 tools on the host. The runtime uses only the demangler; the audio decoders are not wired in
-- **Vita build**: boots in Vita3K+ but showed a black screen at the last check. A fix for a Vita-side file read offset is in the source and has not been re-run on the emulator
+- **Vita build**: first tests on a real PS Vita (November 2026): boots, menus, the opening movie (about 20 fps, no stutter) and New Game into the first rooms play. Known problems on the console: sound effects missing in gameplay (music plays), 15–20 fps in gameplay, a rectangle drawn over Heather's flashlight (probably the lens flare), the Options menu tabs can't be changed with the pad. It needs the extended memory budget (set in the package) and `libshacccg.suprx`
 
-Not confirmed: anything on a physical Vita, real audio output (only a dummy driver was used), performance, memory and texture VRAM cost on a Vita, saving and loading, anything past the first room.
+Not confirmed: saving and loading a game, the other movies and endings, anything past the first areas, long sessions, texture VRAM cost of the Textures settings on a Vita.
 
 ## Building and working on it
 
