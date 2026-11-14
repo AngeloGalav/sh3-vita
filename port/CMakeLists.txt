@@ -64,7 +64,14 @@ endif()
 
 # Vita RAM is tight: guest memory (20 MB image + game heap) and host heap.
 if(NOT DEFINED SH4_GUEST_MB)
-  set(SH4_GUEST_MB 200)
+  if(SH3)
+    # SH3 runs in the extended budget (ATTRIBUTE2=12, ~316 MB free at start with the 32 MB libc heap). At 200 MB
+    # (86 MB heap) the console hung behind the first room's door: heap peak 85 MB, then the next area's ~5 MB buffer
+    # never fit ("free 11434 KB, largest block 3233 KB"). 256 MB = 142 MB of heap, leaving vitaGL's RAM and the spare.
+    set(SH4_GUEST_MB 256)
+  else()
+    set(SH4_GUEST_MB 200)
+  endif()
 endif()
 # Host heap: the malloc arena only uses ~5 MB in game (measured); the rest of the reserved block was lost to the guest heap.
 set(SH4_HOST_HEAP_MB 24)
