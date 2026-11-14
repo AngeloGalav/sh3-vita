@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Widescreen byte patches for sh3.exe, applied to a COPY before recompilation.
+"""Byte patches for sh3.exe, applied to a COPY before recompilation: the widescreen fix, and the
+port's own title-menu change (no Exit row: a Vita game is closed from the system).
 
 Port of ThirteenAG's SilentHill3.WidescreenFix (GPL-3.0, github.com/ThirteenAG/WidescreenFixesPack)
 to the static recompiler, following the approach of sh3-nx (cutarev/sh3-nx): the parts of the fix
@@ -49,6 +50,9 @@ PATCHES = [
      'low-health cross: fstp [ecx-0x18]; fld st(0) -> call the cave (keeps its place in the 4:3 area)'),
     (0x5E82FD, b'\x6a\x00', b'\x6a\x01', 'pause menu box: alpha blending on (sh3-nx/FusionFix)'),
     (0x5E8390, p32(0xFF000000), p32(0x00000000), 'pause menu box: fully transparent (sh3-nx/FusionFix)'),
+    # Not from the widescreen fix: the port's own changes to the title menu.
+    (0x5D812A, bytes.fromhex('c744ac180900000045'), b'\x90' * 9,
+     'title menu: no Exit row (FUN_005d80c0 appends row id 9 last; the rows lay themselves out from their count)'),
 ]
 
 CAVE_FUNC = {

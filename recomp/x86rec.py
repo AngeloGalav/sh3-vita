@@ -338,6 +338,7 @@ if TARGET == "sh3":
     WRAPS = {
         0x5d8e80: "nat_title_mode",   # title screen mode: the port's credits page first, then the title
         0x5d80c0: "nat_title_menu",   # title menu rows: then the port's version in the bottom left corner
+        0x5d9470: "nat_title_scene",  # title scene: the credits page first, before the boot movie (state 7)
         # Widescreen 960x544 (src/host/sh3_widescreen.c):
         0x4193a0: "nat_ws_create",    # create device: force the display mode and the 2D/render-target size
         0x419760: "nat_ws_reset",     # reset device: same

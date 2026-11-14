@@ -1,6 +1,8 @@
 // The port's own screens, drawn with the game's text renderer so they look like the rest of the PC menus:
-//  - a credits page between the boot logos/warning and the title screen (nat_title_mode wraps FUN_005d8e80,
-//    the title screen's per-frame mode function: until the page is done the title is not entered yet);
+//  - a credits page after the boot logos/warning, before the boot movie (nat_title_scene wraps FUN_005d9470, the
+//    title scene's per-frame function: its state 7 fades out and returns code 7, which starts op.000; until the
+//    page is done that state is not run). The game's text lands in the centred 4:3 area like the rest of the interface;
+//  - nat_title_mode wraps FUN_005d8e80 (the title screen's per-frame mode function) for the movie test hooks;
 //  - the port's version (repository VERSION file) in the title menu's bottom left corner (nat_title_menu wraps
 //    FUN_005d80c0, which draws the New Game / Load / Options / Exit rows each frame).
 // Text: 5fa540(w, h) glyph size, 5fa120(r, g, b, a) colour, 5ff8a0("\h...") builds the glyph string and
@@ -47,6 +49,7 @@ static void text(CPU *c, uint32_t ext, const char *s, int x, int y, int center, 
 #define CREDITS_OUT_MS  800
 static int credits_done = -1;
 static uint32_t credits_t0;
+#define CREDITS_Y 9              // the block's top offset: centres it vertically in the 448-high 2D space
 
 static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
     uint32_t sp = c->esp;
@@ -54,22 +57,22 @@ static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
     uint32_t ext = c->esp;
     unsigned w = a, g = a * 5 / 8;
     rt_guest_call(c, 0x5fa540, 2, 0x18, 0x18);
-    text(c, ext, "\\hAI-assisted port by AngeloGalav", 256, 76, 1, w, 0x80);
+    text(c, ext, "\\hAI-assisted port by AngeloGalav", 256, CREDITS_Y + 76, 1, w, 0x80);
     rt_guest_call(c, 0x5fa540, 2, 0x12, 0x12);
-    text(c, ext, "\\hgithub.com/AngeloGalav", 256, 108, 1, g, 0x80);
+    text(c, ext, "\\hgithub.com/AngeloGalav", 256, CREDITS_Y + 108, 1, g, 0x80);
     rt_guest_call(c, 0x5fa540, 2, 0x18, 0x18);
-    text(c, ext, "\\hBased on the work of:", 256, 158, 1, w, 0x80);
+    text(c, ext, "\\hBased on the work of:", 256, CREDITS_Y + 158, 1, w, 0x80);
     static const char *const L[][2] = {
         {"\\hvallfrr's sh4vita", "\\hgithub.com/vallfrr/sh4vita"},
         {"\\hcutarev's sh3-nx", "\\hgithub.com/cutarev/sh3-nx"},
         {"\\hAngeloGalav's sh2-vita", "\\hgithub.com/AngeloGalav/sh2-vita"},
-        {"\\hSilent Hill 3 PC Fix by Steam006 (2.8.9.1)", "\\hcommunity.pcgamingwiki.com/files/file/1331"},
+        {"\\hThirteenAG's Widescreen Fix", "\\hgithub.com/ThirteenAG/WidescreenFixesPack"},
     };
     for (int i = 0; i < 4; i++) {
         rt_guest_call(c, 0x5fa540, 2, 0x16, 0x16);
-        text(c, ext, L[i][0], 256, 196 + 58 * i, 1, w, 0x80);
+        text(c, ext, L[i][0], 256, CREDITS_Y + 196 + 58 * i, 1, w, 0x80);
         rt_guest_call(c, 0x5fa540, 2, 0x12, 0x12);
-        text(c, ext, L[i][1], 256, 222 + 58 * i, 1, g, 0x80);
+        text(c, ext, L[i][1], 256, CREDITS_Y + 222 + 58 * i, 1, g, 0x80);
     }
     rt_guest_call(c, 0x5fa570, 0);
     c->esp = sp;
@@ -115,12 +118,11 @@ static int movie_test_title(CPU *c) {
     return 1;
 }
 
-// FUN_005d8e80 wrapper (no arguments, returns the title's next-mode code; 0 = stay)
-void nat_title_mode(CPU *c) {
+// One frame of the credits page; 0 once it is done (then it never shows again).
+static int credits_frame(CPU *c) {
     HOSTFN;
-    if (movie_test_title(c)) return;
     if (credits_done < 0) credits_done = getenv("SH3_NO_CREDITS") != NULL;
-    if (credits_done) { F_005d8e80_orig(c); return; }
+    if (credits_done) return 0;
     uint32_t now = SDL_GetTicks();
     if (!credits_t0) { credits_t0 = now; rt_log("[port-ui] credits page\n"); }
     uint32_t t = now - credits_t0;
@@ -131,11 +133,33 @@ void nat_title_mode(CPU *c) {
     if (t < CREDITS_IN_MS) a = t * 128 / CREDITS_IN_MS;
     else if (t < CREDITS_IN_MS + CREDITS_HOLD_MS) a = 128;
     else if (t < CREDITS_IN_MS + CREDITS_HOLD_MS + CREDITS_OUT_MS) a = 128 - (t - CREDITS_IN_MS - CREDITS_HOLD_MS) * 128 / CREDITS_OUT_MS;
-    else { credits_done = 1; rt_log("[port-ui] credits done\n"); F_005d8e80_orig(c); return; }
+    else { credits_done = 1; rt_log("[port-ui] credits done\n"); return 0; }
     rt_guest_call(c, 0x5faad0, 0);   // the mode functions' per-frame 2D reset (FUN_005d8e80 starts with it)
     credits_draw(c, a);
-    c->eax = 0;
-    c->esp += 4;                     // ret
+    return 1;
+}
+
+// FUN_005d9470 wrapper (no arguments; returns 1 to stay in the title scene). Its state stack: depth [0xbcc658],
+// states [0xbcc65c + 4*i]; the function first deepens it (FUN_005f1b50) and reads the top. State 7 is the one
+// that fades out and returns code 7 = start the boot movie (table index 1, op.000): the credits run in its place.
+#define SCENE_DEPTH  0xbcc658u
+#define SCENE_STATES 0xbcc65cu
+void F_005d9470_orig(CPU *c);
+void nat_title_scene(CPU *c) {
+    HOSTFN;
+    if (credits_done != 1 && R32(SCENE_STATES + 4 * (R32(SCENE_DEPTH) + 1)) == 7 && credits_frame(c)) {
+        c->eax = 1;
+        c->esp += 4;                 // ret
+        return;
+    }
+    F_005d9470_orig(c);
+}
+
+// FUN_005d8e80 wrapper (no arguments, returns the title's next-mode code; 0 = stay)
+void nat_title_mode(CPU *c) {
+    HOSTFN;
+    if (movie_test_title(c)) return;
+    F_005d8e80_orig(c);
 }
 
 // FUN_005d80c0 wrapper (int draw_menu(int interactive)): the original, then the version in the corner
