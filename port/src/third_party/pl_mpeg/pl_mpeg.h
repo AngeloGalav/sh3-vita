@@ -2812,9 +2812,72 @@ void plm_video_process_macroblock(plm_video_t *self, uint8_t *s, uint8_t *d, int
 void plm_video_decode_block(plm_video_t *self, int block);
 void plm_video_idct(int *block);
 
+// sh23ds (ported from sh2-vita): DCT coefficient codes through an 8-bit lookup table
+// instead of one tree step per bit. Each entry is the leaf reached within 8 bits
+// (value, bits used) or the tree node to go on from. Bit-exact with the table walk.
+typedef struct {
+	int16_t index;
+	uint16_t value;
+	uint8_t length;
+	uint8_t leaf;
+} plm_vlc_lut_t;
+
+#define PLM_DCT_LUT_BITS 8
+static plm_vlc_lut_t PLM_DCT_LUT[1 << PLM_DCT_LUT_BITS];
+static int plm_dct_lut_built = FALSE;
+
+// Built into a local table and copied whole: the bytes are the same on every build, so a decoder already reading
+// the table while another one is created never sees a half-built entry (an in-place build clears e->leaf first).
+static void plm_build_dct_lut(void) {
+	plm_vlc_lut_t lut[1 << PLM_DCT_LUT_BITS];
+	memset(lut, 0, sizeof lut);
+	for (int p = 0; p < (1 << PLM_DCT_LUT_BITS); p++) {
+		plm_vlc_uint_t state = {0, 0};
+		plm_vlc_lut_t *e = &lut[p];
+		e->leaf = FALSE;
+		for (int i = 0; i < PLM_DCT_LUT_BITS; i++) {
+			state = PLM_VIDEO_DCT_COEFF[state.index + ((p >> (PLM_DCT_LUT_BITS - 1 - i)) & 1)];
+			if (state.index <= 0) {
+				e->leaf = TRUE;
+				e->length = i + 1;
+				e->value = state.value;
+				break;
+			}
+		}
+		if (!e->leaf) {
+			e->length = PLM_DCT_LUT_BITS;
+			e->index = state.index;
+		}
+	}
+	memcpy(PLM_DCT_LUT, lut, sizeof lut);
+	plm_dct_lut_built = TRUE;
+}
+
+static inline uint16_t plm_buffer_read_dct_coeff(plm_buffer_t *self) {
+	size_t bi = self->bit_index;
+	if (bi + 24 > (self->length << 3)) {
+		return plm_buffer_read_vlc_uint(self, PLM_VIDEO_DCT_COEFF);    // near the buffer end
+	}
+	const uint8_t *b = self->bytes + (bi >> 3);
+	uint32_t v = ((uint32_t)b[0] << 16 | (uint32_t)b[1] << 8 | b[2]) << (bi & 7);
+	const plm_vlc_lut_t *e = &PLM_DCT_LUT[(v >> (24 - PLM_DCT_LUT_BITS)) & ((1 << PLM_DCT_LUT_BITS) - 1)];
+	self->bit_index = bi + e->length;
+	if (e->leaf) {
+		return e->value;
+	}
+	plm_vlc_uint_t state = {e->index, 0};
+	do {
+		state = PLM_VIDEO_DCT_COEFF[state.index + plm_buffer_read(self, 1)];
+	} while (state.index > 0);
+	return state.value;
+}
+
 plm_video_t * plm_video_create_with_buffer(plm_buffer_t *buffer, int destroy_when_done) {
 	plm_video_t *self = (plm_video_t *)PLM_MALLOC(sizeof(plm_video_t));
 	memset(self, 0, sizeof(plm_video_t));
+	if (!plm_dct_lut_built) {
+		plm_build_dct_lut();
+	}
 	
 	self->buffer = buffer;
 	self->destroy_buffer_when_done = destroy_when_done;
@@ -3502,7 +3565,7 @@ void plm_video_decode_block(plm_video_t *self, int block) {
 	int level = 0;
 	while (TRUE) {
 		int run = 0;
-		uint16_t coeff = plm_buffer_read_vlc_uint(self->buffer, PLM_VIDEO_DCT_COEFF);
+		uint16_t coeff = plm_buffer_read_dct_coeff(self->buffer);   // sh23ds: was plm_buffer_read_vlc_uint
 
 		if ((coeff == 0x0001) && (n > 0) && (plm_buffer_read(self->buffer, 1) == 0)) {
 			// end_of_block
