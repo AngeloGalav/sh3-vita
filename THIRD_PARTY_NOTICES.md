@@ -18,6 +18,10 @@ Scope: this list was made from `port/CMakeLists.txt` (the Vita build, SH3 on by 
 - **pl_mpeg**, Dominic Szablewski: [source](https://github.com/phoboslab/pl_mpeg), MIT. Text: `LICENSES/MIT.txt`; note: `port/src/third_party/pl_mpeg/NOTICE.md`. Compiled into `src/dx/movie.c` for the movie path. The bundled copy carries sh4vita modifications (NEON motion compensation/IDCT, bit reading, B-frame skipping, Layer I audio) and must not be presented as unchanged upstream.
 - **TLSF**, Copyright (c) 2006–2016 Matthew Conte: [source](https://github.com/mattconte/tlsf), BSD 3-clause. Text: `LICENSES/TLSF-BSD-3-Clause.txt` (copied from `port/src/third_party/tlsf/tlsf.h`). Used by `src/rt/heap.c`.
 
+## Ported from third-party source
+
+- **SilentHill3.WidescreenFix** (WidescreenFixesPack), ThirteenAG and contributors: [source](https://github.com/ThirteenAG/WidescreenFixesPack), GPL version 3 (the repository's `license` file at revision `7bce79ffaeee61f95db59a68b35a150cd8644223`). Text: `LICENSES/GPL-3.0.txt`. Its patch sites and logic were rewritten for the static recompiler as `tools/patch_exe.py` (byte patches applied to the user's own `sh3.exe` before recompiling) and `port/src/host/sh3_widescreen.c`; [sh3-nx](https://github.com/cutarev/sh3-nx) was used as a reference for the approach and addresses only (it has no license file, so no code was taken from it).
+
 ## Toolchain runtime pulled in by the link line (`stdc++ m z`, newlib, libgcc)
 
 No license text for these is in `LICENSES/` yet, and none is invented here:

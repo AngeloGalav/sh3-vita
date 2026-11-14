@@ -21,19 +21,40 @@ M(GetAdapterIdentifier) {
     W32(p + 1024 + 12, 0x0250);
     STDRET(4, HR_OK);
 }
+#ifdef SH3_PORT
+// SH3 widescreen: the port renders at one fixed size (sh3_ws_size, 960x544 on the Vita). The
+// Options "Resolution" list is the intersection of these adapter modes with EnumDisplaySettingsA
+// (both report the render size only), so the row is locked to it. See src/host/sh3_widescreen.c.
+int sh3_ws_size(int *w, int *h);   // src/host/sh3_widescreen.c
+#define MODE_COUNT 1
+#else
 static const uint32_t modes[][2] = {{640, 480}, {800, 600}, {960, 544}, {1024, 768}};
-M(GetAdapterModeCount) { STDRET(2, 4); }
+#define MODE_COUNT 4
+#endif
+M(GetAdapterModeCount) { STDRET(2, MODE_COUNT); }
 M(EnumAdapterModes) {
     HOSTFN;
     uint32_t i = ARG(3), p = ARG(4);
-    if (i >= 4) STDRET(4, D3DERR_INVALIDCALL);
-    W32(p, modes[i][0]); W32(p + 4, modes[i][1]); W32(p + 8, 60); W32(p + 12, FMT_X8R8G8B8);
+    if (i >= MODE_COUNT) STDRET(4, D3DERR_INVALIDCALL);
+#ifdef SH3_PORT
+    int w, h; sh3_ws_size(&w, &h);
+    W32(p, (uint32_t)w); W32(p + 4, (uint32_t)h);
+#else
+    W32(p, modes[i][0]); W32(p + 4, modes[i][1]);
+#endif
+    W32(p + 8, 60); W32(p + 12, FMT_X8R8G8B8);
     STDRET(4, HR_OK);
 }
 M(GetAdapterDisplayMode) {
     HOSTFN;
     uint32_t p = ARG(3);
-    W32(p, 1024); W32(p + 4, 768); W32(p + 8, 60); W32(p + 12, FMT_X8R8G8B8);
+#ifdef SH3_PORT
+    int w, h; sh3_ws_size(&w, &h);
+    W32(p, (uint32_t)w); W32(p + 4, (uint32_t)h);
+#else
+    W32(p, 1024); W32(p + 4, 768);
+#endif
+    W32(p + 8, 60); W32(p + 12, FMT_X8R8G8B8);
     STDRET(3, HR_OK);
 }
 M(CheckDeviceType) { STDRET(6, HR_OK); }

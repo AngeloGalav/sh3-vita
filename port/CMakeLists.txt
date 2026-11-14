@@ -59,7 +59,7 @@ if(SH3)
             rt/cinematic.c rt/model.c rt/model_uv.c rt/audit.c)
     list(REMOVE_ITEM RT_SRC ${CMAKE_SOURCE_DIR}/src/${f})
   endforeach()
-  list(APPEND RT_SRC src/host/sh3_stubs.c src/host/sh3_texq_menu.c src/host/sh3_port_ui.c src/host/sh3_natives.c)
+  list(APPEND RT_SRC src/host/sh3_stubs.c src/host/sh3_texq_menu.c src/host/sh3_port_ui.c src/host/sh3_widescreen.c src/host/sh3_natives.c)
 endif()
 
 # Vita RAM is tight: guest memory (20 MB image + game heap) and host heap.

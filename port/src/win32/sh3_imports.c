@@ -222,7 +222,24 @@ U(DrawTextA) { STDRET(5, 0); }
 U(DrawTextW) { STDRET(5, 0); }
 // The Options > Configuration "Resolution" list (FUN_005e2300) keeps only the D3D modes that EnumDisplaySettingsA
 // also lists; a failure at index 0 left that list uninitialised (garbage "-1960902656x32574" on the row).
-// Report the 4:3 modes of the d3d8 shim's EnumAdapterModes (960x544 is not 4:3 and the game filters it anyway).
+// SH3 widescreen: the port renders at one fixed size (sh3_ws_size, 960x544 on the Vita), so that is the only
+// mode listed: the row shows it, left/right cannot change it, and saving the options no longer rewrites disp.ini
+// to a different resolution (the old three 4:3 modes let a save "change" the resolution even untouched).
+#ifdef SH3_PORT
+int sh3_ws_size(int *w, int *h);   // src/host/sh3_widescreen.c
+U(EnumDisplaySettingsA) {
+    HOSTFN;
+    uint32_t i = ARG(2), p = ARG(3);
+    if (i != 0 && i != 0xffffffffu) STDRET(3, 0);   // one mode; ENUM_CURRENT_SETTINGS reports it too
+    if (!p) STDRET(3, 0);
+    int w, h; sh3_ws_size(&w, &h);
+    memset(mb + p + 0x26, 0, 0x9c - 0x26);   // keep dmDeviceName/dmSpecVersion/dmSize as the caller set them
+    W16(p + 0x24, 0x9c);
+    W32(p + 0x28, 0x00040000u | 0x00080000u | 0x00100000u | 0x00400000u);   // BITSPERPEL | PELSWIDTH | PELSHEIGHT | DISPLAYFREQUENCY
+    W32(p + 0x68, 32); W32(p + 0x6c, (uint32_t)w); W32(p + 0x70, (uint32_t)h); W32(p + 0x78, 60);
+    STDRET(3, 1);
+}
+#else
 U(EnumDisplaySettingsA) {
     HOSTFN;
     static const uint32_t m[][2] = {{640, 480}, {800, 600}, {1024, 768}};
@@ -235,6 +252,7 @@ U(EnumDisplaySettingsA) {
     W32(p + 0x68, 32); W32(p + 0x6c, m[i][0]); W32(p + 0x70, m[i][1]); W32(p + 0x78, 60);
     STDRET(3, 1);
 }
+#endif
 U(FindWindowA) { STDRET(2, 0); }
 U(GetClassLongA) { STDRET(2, 0); }
 U(GetKeyState) { STDRET(1, 0); }

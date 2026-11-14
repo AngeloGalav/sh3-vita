@@ -330,11 +330,22 @@ if TARGET == "sh3":
         0x66f9c0: "nat_crt_memcpy",   # _memcpy/_memmove (cdecl dst, src, n) -> returns dst
         0x6635da: "nat_crt_cifmod",   # _CIfmod: x87 ST(1)=x, ST(0)=y -> ST(0)=fmod(x,y) (CRT __cintrindisp2 uses fxam/xlat + .text jump table)
         0x5e62a0: "nat_cfg_texq",     # Options > Configuration "Screen Mode" row -> "Textures" (texture quality), src/host/sh3_texq_menu.c
+        # Widescreen 960x544 (src/host/sh3_widescreen.c, ThirteenAG's SilentHill3.WidescreenFix ported):
+        0x682ba0: "nat_ws_gsx",       # 2D x -> pixels: interface in a centred 4:3 area, stretched calls full width
+        0x401ed8: "nat_ws_health",    # cave (nop padding, ret-patched): low-health cross kept in the 4:3 area
     }
     # The port's own screens around the original ones (src/host/sh3_port_ui.c): F_xxx_orig keeps the game's body.
     WRAPS = {
         0x5d8e80: "nat_title_mode",   # title screen mode: the port's credits page first, then the title
         0x5d80c0: "nat_title_menu",   # title menu rows: then the port's version in the bottom left corner
+        # Widescreen 960x544 (src/host/sh3_widescreen.c):
+        0x4193a0: "nat_ws_create",    # create device: force the display mode and the 2D/render-target size
+        0x419760: "nat_ws_reset",     # reset device: same
+        0x416ae0: "nat_ws_setmode",   # set display mode (w, h): force the arguments
+        0x416b70: "nat_ws_set2d",     # set the 2D/render-target size (w, h): force the arguments
+        0x43ab80: "nat_ws_scalex",    # horizontal camera scale: Hor+ in gameplay, 4:3 width in cutscenes
+        0x43abc0: "nat_ws_scaley",    # vertical camera scale: cutscenes lose height instead of width
+        0x5e3380: "nat_opt_page_lr",  # Options input poll: pad L/R raise the page states 7/8
         # Hot math of the static runtime (console profile 2026-11-14), src/host/sh3_natives.c; the originals
         # stay as F_xxx_orig for SH3_NATVERIFY=1:
         0x662c40: "nat_crt_ftol2",       # _ftol2: ST(0) truncated to int64 in edx:eax, popped

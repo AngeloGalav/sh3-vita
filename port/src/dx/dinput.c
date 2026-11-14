@@ -18,6 +18,9 @@
 typedef struct { ComObj com; } DInput;
 int g_camera_pad_x, g_camera_pad_y, g_camera_pad_active;
 unsigned g_camera_pad_frame;
+#ifdef SH3_PORT
+int g_sh3_pad_l, g_sh3_pad_r;   // pad L/R held state, read by nat_opt_page_lr (sh3_widescreen.c)
+#endif
 typedef struct {
     ComObj com;
     int type;                  // 0 clavier, 1 souris, 2 manette
@@ -353,6 +356,10 @@ M(dev, GetDeviceState) {
 #endif
         const Sh4PadSample *physical = sh4_pad_sample(&self->sample, g, g_frame);
         unsigned raw_buttons = physical->buttons;
+#ifdef SH3_PORT
+        g_sh3_pad_l = (raw_buttons >> SDL_CONTROLLER_BUTTON_LEFTSHOULDER) & 1u;
+        g_sh3_pad_r = (raw_buttons >> SDL_CONTROLLER_BUTTON_RIGHTSHOULDER) & 1u;
+#endif
 #ifdef SH4_TEST_OPTIMIZATIONS
         static const char *script_buttons;
         if (!script_buttons) script_buttons = getenv("SH4_PAD_RAW") ? getenv("SH4_PAD_RAW") : "";

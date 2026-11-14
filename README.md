@@ -37,15 +37,18 @@ Tested on a PC only (Docker image `sh3host:local`, Mesa software GL, dummy audio
 - the 2003 PC release of Silent Hill 3: `sh3.exe` (SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`) and its `data` folder. Other builds are not supported
 - on your computer: Docker, and Python 3 for the recompiler
 
-1. Generate the C code from your own executable: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
-2. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
-3. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
+1. Apply the widescreen byte patches to a copy of your executable: `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json` (checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`; run it on an unpatched copy).
+2. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
+3. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
+4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen.
 
 Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
 
 With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
 
 ## Options
+
+The game renders at the Vita's native 960x544 (a port of ThirteenAG's SilentHill3.WidescreenFix, GPL-3.0, following sh3-nx's approach): gameplay is Hor+, the interface stays in a centred 4:3 area, and Options → Configuration lists that single resolution. The pad's L and R change the Options pages.
 
 **Options → Configuration → Textures**, reached from the title menu, selects the
 texture storage quality. It replaces the PC "Screen Mode" row in the Western
