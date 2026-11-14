@@ -425,7 +425,7 @@ void w32_event_set(uint32_t h, int v) {
     if (!e) return;
     SDL_LockMutex(g_sync);
     e->state = v;
-    SDL_CondBroadcast(g_sync_cv);
+    w32_cv_broadcast();
     SDL_UnlockMutex(g_sync);
 }
 K(SetEvent) { HOSTFN; ev_set(ARG(1), 1); STDRET(1, 1); }
@@ -457,12 +457,12 @@ static int thread_main(void *p) {
     HOSTFN;
     W32(t->c->fs_base + 0x24, t->tid);
     SDL_LockMutex(g_sync);
-    while (t->susp > 0) SDL_CondWait(g_sync_cv, g_sync);   // CREATE_SUSPENDED: wait for ResumeThread
+    while (t->susp > 0) w32_cv_wait(SDL_MUTEX_MAXWAIT);   // CREATE_SUSPENDED: wait for ResumeThread
     SDL_UnlockMutex(g_sync);
     rt_guest_call(t->c, t->start, 1, t->param);
     SDL_LockMutex(g_sync);
     t->done = 1;
-    SDL_CondBroadcast(g_sync_cv);
+    w32_cv_broadcast();
     SDL_UnlockMutex(g_sync);
     return 0;
 }

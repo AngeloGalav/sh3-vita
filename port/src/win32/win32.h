@@ -12,7 +12,8 @@ void h_close(uint32_t h);
 
 // Waitable objects: all protected by a global lock and a common signal.
 extern SDL_mutex *g_sync;
-extern SDL_cond *g_sync_cv;
+void w32_cv_wait(uint32_t ms);   // g_sync held (handles.c)
+void w32_cv_broadcast(void);     // g_sync held
 typedef struct { int manual, state; unsigned gen; } Event;   // gen: PulseEvent generation (releases the threads that are waiting at that moment)
 typedef struct { SDL_Thread *t; CPU *c; uint32_t start, param, tid; int done; int susp; } Thread;   // susp: suspend count (guest SuspendThread/ResumeThread, CREATE_SUSPENDED)
 Thread *w32_thread_of_cpu(const CPU *c);   // current guest thread (GetCurrentThread); NULL for the main thread

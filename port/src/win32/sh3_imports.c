@@ -44,7 +44,7 @@ K(SuspendThread) {   // a thread suspending itself (the CRI workers idle this wa
     if (!t) STDRET(1, 0xffffffffu);
     SDL_LockMutex(g_sync);
     int prev = t->susp++;
-    if (t->c == c) while (t->susp > 0) SDL_CondWait(g_sync_cv, g_sync);
+    if (t->c == c) while (t->susp > 0) w32_cv_wait(SDL_MUTEX_MAXWAIT);
     SDL_UnlockMutex(g_sync);
     STDRET(1, prev);   // suspending ANOTHER thread only counts: guest threads cannot be stopped asynchronously here
 }
@@ -55,7 +55,7 @@ K(ResumeThread) {
     SDL_LockMutex(g_sync);
     int prev = t->susp;
     if (prev > 0) t->susp--;
-    SDL_CondBroadcast(g_sync_cv);
+    w32_cv_broadcast();
     SDL_UnlockMutex(g_sync);
     STDRET(1, prev);
 }

@@ -2,20 +2,56 @@
 #include "win32.h"
 #include <ctype.h>
 #include <sys/stat.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define MAX_H 1024
 static struct { int type; void *obj; } htab[MAX_H];
 static SDL_mutex *hlock;
 SDL_mutex *g_sync;
-SDL_cond *g_sync_cv;
 
 static void lazy_init(void) {
     if (!hlock) {
         hlock = SDL_CreateMutex();
         g_sync = SDL_CreateMutex();
-        g_sync_cv = SDL_CreateCond();
     }
+}
+
+// The condition every Win32 wait sleeps on (events, semaphores, threads, SuspendThread), guarded by g_sync.
+// Not an SDL_cond: on the Vita SDL uses its generic condition, whose broadcast posts each waiter and then
+// waits until every one of them has woken up. Every SetEvent/ReleaseSemaphore/ResumeThread thus blocked
+// until the slowest waiting thread got a core: the movie renderer's ReleaseSemaphore stalled ~32 ms per
+// frame on the console. Here each waiter sleeps on its own semaphore and a broadcast only posts them.
+typedef struct CvWaiter { SDL_sem *sem; struct CvWaiter *next; } CvWaiter;
+static CvWaiter *cv_waiting, *cv_spare;
+
+// g_sync held; ms = SDL_MUTEX_MAXWAIT to wait without a timeout. Returns with g_sync held again;
+// like any condition, the caller re-checks its predicate (wake-ups can be spurious).
+void w32_cv_wait(uint32_t ms) {
+    CvWaiter *w = cv_spare;
+    if (w) { cv_spare = w->next; while (SDL_SemTryWait(w->sem) == 0) {} }   // drop a post that came after a timeout
+    else {
+        w = calloc(1, sizeof *w);
+        if (w) w->sem = SDL_CreateSemaphore(0);
+        if (!w || !w->sem) {   // no memory: degrade to a short sleep, callers poll anyway
+            free(w);
+            SDL_UnlockMutex(g_sync); SDL_Delay(1); SDL_LockMutex(g_sync);
+            return;
+        }
+    }
+    w->next = cv_waiting; cv_waiting = w;
+    SDL_UnlockMutex(g_sync);
+    if (ms == SDL_MUTEX_MAXWAIT) SDL_SemWait(w->sem); else SDL_SemWaitTimeout(w->sem, ms);
+    SDL_LockMutex(g_sync);
+    for (CvWaiter **p = &cv_waiting; *p; p = &(*p)->next)
+        if (*p == w) { *p = w->next; break; }   // timed out: still listed
+    w->next = cv_spare; cv_spare = w;
+}
+
+// g_sync held: wakes every waiter without waiting for them.
+void w32_cv_broadcast(void) {
+    for (CvWaiter *w = cv_waiting; w; w = w->next) SDL_SemPost(w->sem);
+    cv_waiting = NULL;
 }
 
 uint32_t h_new(int type, void *obj) {
@@ -92,7 +128,7 @@ uint32_t w32_wait(uint32_t n, const uint32_t *hs, int all, uint32_t timeout_ms) 
         }
         uint32_t el = SDL_GetTicks() - start;
         if (timeout_ms != 0xffffffffu && el >= timeout_ms) break;
-        SDL_CondWaitTimeout(g_sync_cv, g_sync, timeout_ms == 0xffffffffu ? 50 : (timeout_ms - el < 50 ? timeout_ms - el : 50));
+        w32_cv_wait(timeout_ms == 0xffffffffu ? 50 : (timeout_ms - el < 50 ? timeout_ms - el : 50));
     }
     SDL_UnlockMutex(g_sync);
     if (wait_id <= 5 || wait_id % 200 == 0) rt_log("w32_wait #%u -> TIMEOUT\n", wait_id);
@@ -104,7 +140,7 @@ void w32_event_pulse(uint32_t h) {
     if (!e) return;
     SDL_LockMutex(g_sync);
     e->gen++;
-    SDL_CondBroadcast(g_sync_cv);
+    w32_cv_broadcast();
     SDL_UnlockMutex(g_sync);
 }
 
