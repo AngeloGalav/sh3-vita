@@ -98,6 +98,9 @@ M(Present) { memcrc_maybe(); texfree_present();
     extern void rt_controls_present(void), console_ui_finish_frame(void);
     rt_controls_present();
     console_ui_finish_frame();
+#ifdef __vita__
+    movie_vita_present(g_dev);   // sceAvPlayer: show the video even if the game did not draw its movie quad
+#endif
     prep_present();
     prep_gdrain();
     rt_audit_frame(g_frame);

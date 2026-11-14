@@ -22,7 +22,7 @@ sh3-port runs Silent Hill 3 from the PC version's own data. A recompiler transla
 
 On a real PS Vita (November 2026, extended memory budget, `libshacccg.suprx` installed):
 
-- Boots through the Konami logo, the content warning and the port's credits page, plays the opening movie `op.000` (about 20 fps, no stutter) and reaches the title menu (New Game / Load / Options)
+- Boots through the Konami logo, the content warning and the port's credits page, plays the opening movie (about 20 fps from `op.000`; 30 fps with picture and sound from a converted `op.mp4`, see Install) and reaches the title menu (New Game / Load / Options)
 - New Game: the intro at Lakeside Amusement Park and the first areas, with music and cutscene audio
 - Renders at the Vita's native 960x544 in widescreen; the frame rate is capped at 30 fps and holds it most of the time (heavier spots drop to about 20)
 - A "Textures" option (Performance / Balanced / High) and the Options pages switchable with L / R
@@ -41,7 +41,9 @@ Built and checked on the PC but not yet heard or seen on the console: in-game so
 1. Apply the port's byte patches (widescreen, title menu without Exit) to a copy of your executable: `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json` (checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`; run it on an unpatched copy).
 2. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
 3. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
-4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`): this build plays them itself.
+4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`) unless you convert them as below: a converted `.mp4` can then replace its `.000`.
+
+Optional, for full-rate movies on the Vita: `python3 tools/convert_movies.py "<your game>/data/movie"` (needs ffmpeg and ffprobe) demangles each `.000` with the verified reference algorithm and encodes an MP4 (H.264 High level 3.1, yuv420p + AAC-LC 48 kHz stereo, duration verified) next to it. Copy those `.mp4` files to `ux0:data/sh3/data/movie/` and the port plays them with the Vita's hardware video decoder (sceAvPlayer) instead of decoding in software: steady 30 fps and clean audio even when the memory card reads slowly. Without the files the built-in decoder is used unchanged. The converted files are derived from game data: never commit them, never share them.
 
 Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
 
@@ -121,6 +123,10 @@ are what the code does with the variable unset.
 | Variable | Effect |
 |---|---|
 | `SH3_NO_MOVIE=1` | Movies unavailable: the movie graph cannot be created and the game moves on. For scripted runs. |
+| `SH3_MV_MP4=0` | Vita: do not play `<name>.mp4` next to a `.000` with sceAvPlayer; always use the software decoder. Default: the MP4 is used when present (see "Preparation"). |
+| `SH3_MV_FEED=0` | Vita, MP4 playback: stop feeding the game's own movie renderer black samples (default on: without them the game's movie loop runs at 10 fps). |
+| `SH3_MV_TEX=phy` / `SH3_MV_APPUTIL=0` / `SH4_CDRAM_KEEP_MB=N` | Vita, MP4 playback: decoder frame memory in phycont instead of cdram / skip `sceAppUtilInit` / cdram left free for the decoder (default 32 MB). Defaults are the console-tested setup. |
+| `SH3_MV_PRIO=0xA0` | Vita, MP4 playback: base priority of the sceAvPlayer threads (a thread priority, 0-255). |
 | `SH3_NO_CREDITS=1` | Skips the port's credits page before the opening movie (scripted runs). |
 | `SH3_FPS=60` | Vita: turns the 30 fps cap off (the game then swings between 60 and 20–30 fps). |
 | `SH4_INTERP=1` | Vita: turns on the frame interpolation inherited from SH4 (adds blended frames; off for SH3 because it undid the 30 fps cap). |

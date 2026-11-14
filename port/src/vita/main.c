@@ -134,8 +134,28 @@ void plat_gl_init(void) {
     SceKernelFreeMemorySizeInfo info = {.size = sizeof info};
     sceKernelGetFreeMemorySize(&info);
     int threshold = (int)info.size_user - (SH4_VGL_RAM_MB << 20);
-    GLboolean res_reduced = vglInitExtended(0, 960, 544, threshold, SCE_GXM_MULTISAMPLE_NONE);
-    rt_log("[gl] vglInitExtended(RAM threshold %d) -> resolution reduced: %d\n", threshold, res_reduced);
+    // vglInitExtended takes ALL physically contiguous memory (console: "[mem] after vitaGL: ... phycont 0 KB"),
+    // and then sceAvPlayer's hardware H.264 decoder cannot allocate anything: error event ~1 s after the first
+    // file reads, no frame buffer ever allocated. Leave SH4_PHYCONT_MB (default 8) MB of phycont free — vitaGL's
+    // own video_playback sample does exactly this ("so that we can use it in sceAvPlayer"). The phycont pool is
+    // only vitaGL's third allocation fallback, so the game does not miss it (check [vgl] swap lines).
+    // cdlg threshold 0x8C6000 = SCE_KERNEL_MAX_MAIN_CDIALOG_MEM_SIZE (vitaGL vgl.c): leave the whole common
+    // dialog budget free, exactly like vglInitExtended did — passing 0 here would give the pool to vitaGL.
+    int phycont_keep_mb = 8;
+    { const char *pk = getenv("SH4_PHYCONT_MB"); if (pk) phycont_keep_mb = atoi(pk); }
+    // SH4_CDRAM_KEEP_MB: also leave some of the cdram bucket free (default 0 = vitaGL takes it all, as before).
+    // Diagnosis option: if sceAvPlayer's decoder init needs cdram memblocks, this is the knob to test it; the
+    // game's texture pool loses only what is left free (it uses ~50 MB of the 112 MB extended cdram at the title).
+#ifdef SH3_PORT
+    int cdram_keep_mb = 32;   // SH3: the MP4 player's decoder asks for an 8 MB cdram texture; 32 MB is the console-tested value
+#else
+    int cdram_keep_mb = 0;
+#endif
+    { const char *ck = getenv("SH4_CDRAM_KEEP_MB"); if (ck) cdram_keep_mb = atoi(ck); }
+    GLboolean res_reduced = vglInitWithCustomThreshold(0, 960, 544, threshold, cdram_keep_mb << 20, phycont_keep_mb << 20,
+                                                      0x8C6000, SCE_GXM_MULTISAMPLE_NONE);
+    rt_log("[gl] vglInitWithCustomThreshold(RAM threshold %d, phycont left %d MB, cdram left %d MB) -> resolution reduced: %d\n",
+           threshold, phycont_keep_mb, cdram_keep_mb, res_reduced);
     shark_install_log_cb(shark_log);
     shark_set_warnings_level(SHARK_WARN_MAX);
     // Opt-in compiler experiment. Separate cache namespaces in draw.c prevent

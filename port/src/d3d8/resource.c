@@ -438,6 +438,9 @@ void texq_set(int q) {
 }
 
 GLuint tex_gl(Texture *t) {
+#ifdef __vita__
+    if (t->yuv) return movie_yuv_tex(t);   // sceAvPlayer video texture: NV12 upload, not the guest copy
+#endif
     uint32_t qgen = __atomic_load_n(&g_texq_gen, __ATOMIC_ACQUIRE);
     if (t->q_gen != qgen) {   // quality changed since this texture was stored: rebuild it from its guest copy
         if (t->gl && t->tfmt && !(t->usage & 1) && !t->movie && !t->freed) {
@@ -468,6 +471,11 @@ GLuint tex_gl(Texture *t) {
         // ponytail: movie texture recognised by its size during playback (single level, not a render target);
         // it may be unlocked several times per presented frame: only one upload per frame.
         t->movie = g_movie_w && t->levels == 1 && t->w == (uint32_t)g_movie_w && t->h == (uint32_t)g_movie_h;
+#ifdef __vita__
+        // sceAvPlayer path: the game's movie texture is never shown (the draw is replaced by the video quad),
+        // so its content does not matter: no conversion, no upload, even when the game copies samples into it.
+        if (t->movie && g_movie_avplayer) { __atomic_exchange_n(&t->dirty, 0, __ATOMIC_ACQ_REL); return t->gl; }
+#endif
         if (t->movie && t->up_frame == g_pframe + 1) return t->gl;
         t->up_frame = g_pframe + 1;
         uint32_t dirty = __atomic_exchange_n(&t->dirty, 0, __ATOMIC_ACQ_REL);

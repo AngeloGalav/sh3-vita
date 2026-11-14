@@ -70,6 +70,7 @@ struct Texture {
     Surface **lv;          // surfaces de niveau
     int dirty;
     int movie;             // movie texture (single level, size of the current movie)
+    int yuv;               // Vita: host-owned sceAvPlayer video texture (movie.c uploads NV12 frames)
     unsigned up_frame;     // g_frame + 1 of the last upload
     int tfmt;              // Vita: GL format of the whole mip chain, fixed by level 0 (1 = 565, 2 = 4444, 3 = RGBA8): vitaGL mixes up levels of different formats
     int stg_alloc;         // movie (Vita): GL 565 storage exists (565 frames come from movie_565_take)
@@ -136,6 +137,13 @@ typedef struct Device {
 } Device;
 
 extern Device *g_dev;
+
+extern int g_movie_avplayer;               // movie.c (Vita): 1 while sceAvPlayer plays the current movie
+#ifdef __vita__
+GLuint movie_yuv_tex(Texture *t);          // movie.c: upload the newest video frame (prep thread, tex_gl hook)
+int movie_vita_override(Device *d, uint32_t prim, uint32_t nverts, uint32_t nprims);   // movie.c: replace the game's movie quad (prep_draw)
+void movie_vita_present(Device *d);        // movie.c: Present fallback when the game did not draw the quad
+#endif
 
 // ---------- shaders ----------
 struct VShader {

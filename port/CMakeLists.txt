@@ -126,7 +126,7 @@ target_link_libraries(sh4
   SceDisplay_stub SceCtrl_stub SceAudio_stub SceAudioIn_stub SceSysmodule_stub SceGxm_stub
   SceCommonDialog_stub SceAppMgr_stub SceTouch_stub SceHid_stub SceMotion_stub SceKernelDmacMgr_stub
   SceShaccCg_stub SceIofilemgr_stub SceLibKernel_stub SceKernelThreadMgr_stub SceKernelModulemgr_stub
-  ScePower_stub SceProcessmgr_stub SceRtc_stub SceIme_stub SceJpeg_stub
+  ScePower_stub SceProcessmgr_stub SceRtc_stub SceIme_stub SceJpeg_stub SceAvPlayer_stub SceAppUtil_stub
   stdc++ m z)
 
 target_link_options(sh4 PRIVATE -Wl,--allow-multiple-definition)

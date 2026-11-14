@@ -250,6 +250,9 @@ void prep_bind(void) { rec_begin(R_BIND, 1); rec_commit(1); }
 typedef struct { uint32_t nbytes, origin, copy; const uint8_t *src; } Part;
 void prep_draw(Device *d, uint32_t prim, uint32_t first, uint32_t nverts, uint32_t nprims, const uint8_t *indices, int index32,
                uint32_t min_index, const uint8_t *up, uint32_t up_stride) {
+#ifdef __vita__
+    if (g_movie_avplayer && movie_vita_override(d, prim, nverts, nprims)) return;   // the game's movie quad becomes the video quad
+#endif
     if (!nverts) return;
     uint32_t fvfs = 0, smask = up ? 1u : gfx_stream_mask(d, &fvfs);
     if (g_audit_checks) {

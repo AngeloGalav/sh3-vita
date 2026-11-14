@@ -11,6 +11,7 @@ void q_sync_n(const char *why);
 static inline void q_sync(const char *why) { if (q_on == 1) q_sync_n(why); }
 void q_swap(void);
 void q_tex565(GLint level, GLsizei w, GLsizei h, const void *px, volatile int *busy);   // glTexSubImage2D 565 on the render thread; *busy = 0 once read
+void q_tex_yuv(GLsizei w, GLsizei h, const void *px, size_t bytes, volatile int *busy, GLenum fmt); // NV12 YUV upload on the render thread; *busy = 0 once read
 void q_report(double frames);
 
 #ifndef QGL_IMPL

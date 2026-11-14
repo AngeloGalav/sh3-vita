@@ -11,6 +11,7 @@
 #include <psp2/kernel/threadmgr.h>
 #include <psp2/kernel/cpu.h>
 #include <psp2/kernel/sysmem.h>
+#include <psp2/display.h>
 #endif
 
 #include <stdio.h>
@@ -77,6 +78,7 @@ struct Movie {
     SDL_mutex *lock;
     struct { uint32_t code, p1, p2; } ev[16];
     int nev;
+    int nsink;                                      // IMediaEventSink::Notify calls (EC_COMPLETE safety net)
     int vol;                                      // hundredths of a dB (0 = full, -10000 = mute)
     CPU *dec_cpu;
     double st_dec, st_conv, st_recv;              // [movie] stats per 2 s window (cumulative ms)
@@ -556,6 +558,591 @@ static void push_frame(Movie *m, CPU *c, plm_frame_t *f) {
     sp->busy = 0;
 }
 
+#ifdef __vita__
+// ===================== sceAvPlayer path (preconverted MP4, hardware decoder) =====================
+// tools/convert_movies.py makes <name>.mp4 (H.264 High + AAC-LC 48 k) from the user's own <name>.000.
+// When that file sits next to the .000 the port plays it with sceAvPlayer instead of pl_mpeg: the
+// hardware decoder decodes, a pull thread feeds the audio into the same mixer ring (movie_audio_mix),
+// and the video frames go to a vitaGL YUV texture (NV12, hardware CSC). The game's movie quad (its
+// own 512x512 texture, which receives no frames in this path) is replaced at record time in prep_draw
+// by a fullscreen video quad, so the whrlays drawn after it stay on top. The graph contract is kept:
+// Run/Pause/Stop drive the guest renderer, EndOfStream -> EC_COMPLETE, position queries answer from
+// the player clock. SH3_MV_MP4=0 disables the path, SH3_MV_FEED=1 keeps feeding the guest renderer
+// black samples (if the game stops drawing its movie quad without frames, the console test will show
+// "at Present" counts and this knob restores the old renderer behaviour at the cost of one memcpy).
+#include <psp2/avplayer.h>
+#include <psp2/apputil.h>
+#include <psp2/gxm.h>
+#include <psp2/io/fcntl.h>
+#include <psp2/sysmodule.h>
+#include <malloc.h>
+#include "prep.h"
+
+int g_movie_avplayer;                       // 1 while the current movie plays through sceAvPlayer
+
+enum { AV_EV_ERROR = 1, AV_EV_PLAYER_END = 2, AV_EV_STREAM_CREATED = 4, AV_EV_FLUSHED = 8,
+       AV_EV_SEEK_OVERLOADED = 16, AV_EV_AUDIO_TRACK_END = 32, AV_EV_VIDEO_TRACK_END = 64 };
+
+static SceAvPlayerHandle s_h = -1;
+// sceAvPlayerInit returns the handle on success, < 0 on error — but the handle is a pointer and the Vita
+// heap lives at 0x8x..., so a valid handle is negative as int32 (real Vita: 0x82a2b600; Vita3K's emulated
+// module does the same). Only real SCE errors (0x806Axxxx, the avplayer module range) mean failure.
+static int av_h_ok(int h) { return h >= 0 || (h & 0xFFFF0000) != 0x806A0000; }
+static int s_fd_slot = -1;                  // the file replacement stores its descriptor here
+static volatile int s_av_end;               // PLAYER_END event seen
+static double s_dur;                        // duration, seconds
+static int s_vw, s_vh;                      // video size
+static unsigned long long s_vframes;        // frames pulled since Start
+static unsigned long long s_vframes_total;  // frames pulled since AddSource — never zeroed (EOF guard)
+static int s_autostart;                     // init.autoStart was 1: AddSource starts playback, never call Start
+static int s_feed;                          // SH3_MV_FEED: keep the guest renderer fed with black frames
+static uint8_t *s_feed_buf;                 // the black DIB (allocated once)
+
+// ---- file replacement: the player reads the mp4 itself through these ----
+static int avf_open(void *p, const char *fn) {
+    *(int *)p = sceIoOpen(fn, SCE_O_RDONLY, 0);
+    rt_log("[movie] avf_open %s -> fd %d\n", fn, *(int *)p);
+    return *(int *)p < 0 ? -1 : 0;
+}
+static int avf_close(void *p) { rt_log("[movie] avf_close\n"); if (*(int *)p >= 0) sceIoClose(*(int *)p); *(int *)p = -1; return 0; }
+static int avf_read(void *p, uint8_t *buf, uint64_t pos, uint32_t len) {
+    static int logged;
+    int fd = *(int *)p;
+    if (sceIoLseek(fd, (SceOff)pos, SCE_SEEK_SET) < 0) { rt_log("[movie] avf_read seek %llu failed\n", (unsigned long long)pos); return -1; }
+    uint32_t n = 0;
+    while (n < len) { ssize_t r = sceIoRead(fd, buf + n, len - n); if (r <= 0) break; n += (uint32_t)r; }
+    if (logged < 40) { logged++; rt_log("[movie] avf_read %d: pos %llu len %u -> %u\n", logged, (unsigned long long)pos, len, n); }
+    return (int)n;
+}
+static uint64_t avf_size(void *p) {
+    uint64_t s = (uint64_t)sceIoLseek(*(int *)p, 0, SCE_SEEK_END);
+    static int logged;
+    if (!logged) { logged = 1; rt_log("[movie] avf_size -> %llu\n", (unsigned long long)s); }
+    return s;
+}
+
+static void *av_alloc(void *a, uint32_t align, uint32_t size) {
+    void *p = memalign(align < 16 ? 16 : align, size);
+    static int n;
+    if (!p) rt_log("[movie] avplayer: allocate %u B align %u FAILED (newlib heap)\n", size, align);
+    else if (n++ < 12) rt_log("[movie] avplayer: allocate %u B align %u ok\n", size, align);
+    return p;
+}
+static void av_free(void *a, void *p) { free(p); }
+// The video frame buffers must be physically contiguous and GPU-mapped: the hardware H.264 decoder writes its
+// NV12 output there, and plain main-RAM buffers make the module fail with an error event right after the first
+// reads (real Vita, 2026-11-14). Two recipes, switched by SH3_MV_TEX:
+//  "phy" (default): vitaGL's video_playback sample — USER_MAIN_PHYCONT_NC_RW memblock, size aligned to 1 MB.
+//  "cd": OpenFMV's gpu_alloc (hardware-confirmed by the PSVita-Dev-Wiki author: GetVideoData never yields a
+//        frame unless the buffer is a raw USER_CDRAM_RW block + sceGxmMapMemory RW): attr 0x4, align 0x40000.
+// Needs free memory of that kind: main.c leaves SH4_PHYCONT_MB / SH4_CDRAM_KEEP_MB free after vitaGL.
+// The chosen recipe is tried first, then the other contiguous pool, then plain main RAM: returning NULL from
+// allocateTexture kills the player with an error event (real Vita, run 12: an 8 MB request failed with only
+// 4 MB of CDRAM free; OpenFMV leaves 32 MB).
+static int av_tex_cd;                        // 1: prefer the CDRAM recipe (set from SH3_MV_TEX=cd in av_open)
+#define AV_TEX_MAX 24
+static struct { void *base; SceUID blk; } s_tex[AV_TEX_MAX];  // blk < 0: plain malloc block
+static void av_tex_track(void *base, SceUID blk) {
+    for (int i = 0; i < AV_TEX_MAX; i++) if (!s_tex[i].base) { s_tex[i].base = base; s_tex[i].blk = blk; return; }
+    rt_log("[movie] avplayer: tex table overflow %p\n", base);
+}
+static void *av_alloc_tex(void *a, uint32_t align, uint32_t size) {
+    (void)a;
+    struct texkind { int type; uint32_t attr; const char *name; } kinds[2] = {
+        { SCE_KERNEL_MEMBLOCK_TYPE_USER_MAIN_PHYCONT_NC_RW, 0, "phycont" },
+        { SCE_KERNEL_MEMBLOCK_TYPE_USER_CDRAM_RW, 0x00000004u, "cdram" },
+    };
+    int order[3] = { av_tex_cd, 1 - av_tex_cd, -1 };   // chosen recipe, the other pool, main RAM
+    for (int i = 0; i < 3; i++) {
+        uint32_t sz = size;
+        if (order[i] < 0) {                                  // main RAM: the decoder may not use it, but better than NULL
+            void *p = memalign(align < 16 ? 16 : align, size);
+            if (p) { av_tex_track(p, -1); rt_log("[movie] avplayer: tex %u B -> main RAM\n", size); return p; }
+            continue;
+        }
+        struct texkind *k = &kinds[order[i]];
+        SceUID blk;
+        if (order[i] == 1) {                                 // cdram: OpenFMV's gpu_alloc (attr 0x4, align >= 0x40000)
+            if (align < 0x40000) align = 0x40000;
+            sz = (size + align - 1) & ~(align - 1);
+            SceKernelAllocMemBlockOpt opt;
+            memset(&opt, 0, sizeof opt);
+            opt.size = sizeof opt;
+            opt.attr = k->attr;
+            opt.alignment = align;
+            blk = sceKernelAllocMemBlock("mv_tex", k->type, sz, &opt);
+        } else {                                             // phycont: sample's alloc_for_gpu (1 MB alignment)
+            sz = (size + 0xFFFFFu) & ~0xFFFFFu;
+            blk = sceKernelAllocMemBlock("mv_tex", k->type, sz, NULL);
+        }
+        if (blk < 0) { rt_log("[movie] avplayer: alloc_tex %u B %s -> memblock %08x\n", sz, k->name, (unsigned)blk); continue; }
+        void *base = NULL;
+        int r = sceKernelGetMemBlockBase(blk, &base);
+        if (r < 0 || !base) { rt_log("[movie] avplayer: alloc_tex %u B %s -> base %08x\n", sz, k->name, (unsigned)r); sceKernelFreeMemBlock(blk); continue; }
+        r = sceGxmMapMemory(base, sz, SCE_GXM_MEMORY_ATTRIB_RW);
+        if (r < 0) { rt_log("[movie] avplayer: alloc_tex %u B %s -> gxmMapMemory %08x\n", sz, k->name, (unsigned)r); sceKernelFreeMemBlock(blk); continue; }
+        av_tex_track(base, blk);
+        rt_log("[movie] avplayer: tex %u B %s ok\n", sz, k->name);
+        return base;
+    }
+    rt_log("[movie] avplayer: alloc_tex %u B all pools FAILED\n", size);
+    return NULL;
+}
+static void *s_tex_dead[AV_TEX_MAX]; static SceUID s_tex_dead_blk[AV_TEX_MAX];  // freed by the module thread, reaped on the game thread
+static void av_free_tex(void *a, void *p) {
+    (void)a;
+    if (!p) return;
+    // called from the avplayer module thread: GL calls are illegal here (run 13: "GL call from another thread").
+    // unlink now, unmap/free on the next Present (game thread), like the queue's other cross-thread handoffs.
+    for (int i = 0; i < AV_TEX_MAX; i++) if (s_tex[i].base == p) {
+        SceUID blk = s_tex[i].blk;
+        s_tex[i].base = NULL;
+        if (blk < 0) { free(p); return; }
+        for (int j = 0; j < AV_TEX_MAX; j++) if (!s_tex_dead[j]) { s_tex_dead[j] = p; s_tex_dead_blk[j] = blk; return; }
+        rt_log("[movie] avplayer: free_tex %p dead list full\n", p);
+        return;
+    }
+    rt_log("[movie] avplayer: free_tex %p not in table\n", p);
+}
+static void av_reap_tex(void) {   // game thread (Present): q_sync + glFinish are legal here
+    for (int j = 0; j < AV_TEX_MAX; j++) {
+        void *p = s_tex_dead[j];
+        if (!p) continue;
+        s_tex_dead[j] = NULL;
+        q_sync("av_free_tex");
+        glFinish();                                                 // GPU idle before unmapping (sample's free_for_gpu)
+        int r1 = sceGxmUnmapMemory(p);
+        int r2 = s_tex_dead_blk[j] >= 0 ? sceKernelFreeMemBlock(s_tex_dead_blk[j]) : (int)s_tex_dead_blk[j];
+        if (r1 < 0 || r2 < 0) rt_log("[movie] avplayer: reap_tex %p unmap %08x free %08x\n", p, (unsigned)r1, (unsigned)r2);
+    }
+}
+static void av_event(void *p, int32_t id, int32_t src, void *data) {
+    // every event, once: the id sequence shows how far the player got (2 = stream created, 4 = player end, ...)
+    rt_log("[movie] avplayer: event id %d src %d data %08x\n", id, src, data ? *(uint32_t *)data : 0u);
+    if (id == AV_EV_PLAYER_END) s_av_end = 1;
+}
+
+// ---- video frames: the pull thread stages NV12 copies; the prep thread uploads the newest one ----
+// The staging buffer uses vitaGL's planar layout: the Y plane padded to power-of-2 dimensions (nearest_po2),
+// UV at offset padw*padh. GXM expects the UV plane at the tight w*h offset of the UPLOADED size, and vitaGL
+// pads the plane before copying (gpu_alloc_planar_texture), so a tight 512x384 frame uploaded as 512x384 puts
+// its UV where GXM reads garbage (wrong colors + green, real Vita 2026-11-14). Uploading as 512x512 padded
+// makes both layouts agree; the quad samples only the used 0..vw/padw, 0..vh/padh region.
+#define AVQ 3
+static uint8_t *s_av_buf[AVQ];
+static int s_padw, s_padh;                    // padded texture dimensions (po2 of s_vw/s_vh), set in av_create_vtex
+// CSC1 (vitaGL's "BT709" mapping) is the matrix the hardware-confirmed OpenFMV uses for sceAvPlayer output;
+// SH3_MV_CSC=0 switches to CSC0 ("BT601") to compare tints without rebuilding.
+static GLenum s_yuv_fmt = VGL_YUV420P_NV12_BT709;
+static volatile int s_av_busy[AVQ];         // 1: owned by the consumer (queued or being uploaded)
+static int s_av_q[AVQ];
+static volatile unsigned s_av_qh, s_av_qt;
+static unsigned s_av_seq;                  // frames staged
+static volatile int s_av_pick;             // 1 from Present entry until this Presented frame consumed its staged frame
+static volatile unsigned s_av_late;        // staged frames dropped by catch-up (consumer behind)
+static SDL_mutex *s_av_mx;
+static double s_av_up_ms;
+static unsigned s_av_up_n;
+
+static void av_stage(SceAvPlayerFrameInfo *vi) {
+    uint32_t w = vi->details.video.width, h = vi->details.video.height;
+    if ((int)w != s_vw || (int)h != s_vh) return;                       // unexpected frame geometry: drop
+    size_t ysz = (size_t)w * h;
+    size_t uvoff = (size_t)s_padw * s_padh, psz = uvoff * 3 / 2;
+    int k = -1;
+    SDL_LockMutex(s_av_mx);
+    for (int i = 0; i < AVQ; i++) {
+        int qd = 0;
+        for (unsigned n = s_av_qh; n != s_av_qt; n++) if (s_av_q[n % AVQ] == i) { qd = 1; break; }
+        if (!s_av_busy[i] && !qd) { k = i; break; }
+    }
+    if (k >= 0) s_av_busy[k] = 1;
+    SDL_UnlockMutex(s_av_mx);
+    if (k < 0) return;                                                  // the consumer is behind: drop
+    if (!s_av_buf[k] && !(s_av_buf[k] = malloc(psz))) { s_av_busy[k] = 0; return; }
+    const uint8_t *src = (const uint8_t *)vi->pData;                    // NV12: Y plane then interleaved UV
+    if ((int)w == s_padw) {                                             // our case: only the height needs padding
+        memcpy(s_av_buf[k], src, ysz);
+        memcpy(s_av_buf[k] + uvoff, src + ysz, ysz / 2);
+    } else {                                                            // rows must be re-padded one by one
+        for (uint32_t y = 0; y < h; y++) memcpy(s_av_buf[k] + (size_t)y * s_padw, src + (size_t)y * w, w);
+        for (uint32_t y = 0; y < h / 2; y++)
+            memcpy(s_av_buf[k] + uvoff + (size_t)y * s_padw, src + ysz + (size_t)y * w, w);
+    }
+    SDL_LockMutex(s_av_mx);
+    s_av_q[s_av_qt % AVQ] = k; s_av_qt++; s_av_seq++;
+    SDL_UnlockMutex(s_av_mx);
+}
+
+// prep thread (through tex_gl): upload the newest staged frame into the texture, as vitaGL YUV (hardware CSC).
+GLuint movie_yuv_tex(Texture *t) {
+    if (!s_av_mx) return t->gl;
+    if (!t->gl) {
+        glGenTextures(1, &t->gl);
+        glBindTexture(GL_TEXTURE_2D, t->gl);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    // Exactly one staged frame per Presented frame, in decode order (FIFO): every decoded frame is
+    // shown once and only once, so pacing is even. tex_gl can be called several times per frame, so
+    // consumption is gated by the Present tick (s_av_pick). If more than one frame is queued the
+    // consumer fell behind: drop the older ones and catch up (the old "show newest" skipped frames
+    // whenever the decoder phase drifted -> the irregular pacing seen 2026-11-14).
+    int k = -1;
+    SDL_LockMutex(s_av_mx);
+    if (s_av_pick) {
+        s_av_pick = 0;
+        if (s_av_qh != s_av_qt) {
+            while (s_av_qt - s_av_qh > 1) { s_av_busy[s_av_q[s_av_qh % AVQ]] = 0; s_av_qh++; s_av_late++; }
+            k = s_av_q[s_av_qh % AVQ]; s_av_qh++;
+        }
+    }
+    SDL_UnlockMutex(s_av_mx);
+    if (k >= 0) {
+        uint64_t t0 = SDL_GetPerformanceCounter();
+        static int yt_n;
+        if (!yt_n++) rt_log("[movie] yuv_tex: gl %u first upload %dx%d buf %p\n", t->gl, s_vw, s_vh, s_av_buf[k]);
+        glBindTexture(GL_TEXTURE_2D, t->gl);
+        q_tex_yuv((GLsizei)s_padw, (GLsizei)s_padh, s_av_buf[k], (size_t)s_padw * s_padh * 3 / 2, &s_av_busy[k], s_yuv_fmt);
+        s_av_up_ms += (double)(SDL_GetPerformanceCounter() - t0) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+        if (!(++s_av_up_n % 75)) { rt_log("[movie] avplayer: YUV upload queued %.1f ms/frame, %u late drops\n", s_av_up_ms / 75, s_av_late); s_av_up_ms = 0; }
+    }
+    return t->gl;
+}
+
+// keep the guest renderer's state machine fed (SH3_MV_FEED=1): one black sample per video frame.
+// In this path the guest renderer never calls SetProperties on our allocator (no source media type was
+// negotiated), so the sample slots must be created here, exactly like M(al, SetProperties) does.
+static void av_feed_alloc(Movie *m) {
+    static uint32_t sbuf[NSAMP], scap[NSAMP];
+    int w = m->w ? m->w : s_vw, h = m->h ? m->h : s_vh;   // m->w is still 0 at av_open: the stream info is async
+    uint32_t sz = (uint32_t)w * (uint32_t)h * 4;
+    if (!sz) return;
+    Samp *ns[NSAMP] = {0};
+    for (int i = 0; i < NSAMP; i++) if (!m->samp[i]) {
+        ns[i] = calloc(1, sizeof(Samp));
+        if (!ns[i]) { for (int j = 0; j < i; j++) free(ns[j]); return; }
+    }
+    if (!movie_samples_reserve(sbuf, scap, NSAMP, sz)) {
+        for (int i = 0; i < NSAMP; i++) free(ns[i]);
+        static int rl; if (!rl++) rt_log("[movie] avplayer feed: guest heap has no room for %u x %u B\n", NSAMP, sz);
+        return;
+    }
+    m->buf_size = sz;
+    for (int i = 0; i < NSAMP; i++) {
+        if (!m->samp[i]) {
+            m->samp[i] = ns[i];
+            m->samp[i]->m = m;
+            com_wrap(&m->samp[i]->com, MK_SAMP, sm_vt, 19, "IMediaSample");
+        }
+        m->samp[i]->buf = sbuf[i];
+        m->samp[i]->size = sz;
+    }
+    rt_log("[movie] avplayer feed: %u sample slots of %u B ready\n", NSAMP, sz);
+}
+static void av_feed_dummy(Movie *m, CPU *c) {
+    static unsigned s_feed_n, s_feed_skip;
+    if (!m->samp[0]) av_feed_alloc(m);
+    Samp *sp = NULL;
+    for (int i = 0; i < NSAMP && !sp; i++) if (m->samp[i] && !m->samp[i]->busy) sp = m->samp[i];
+    if (!sp || !m->mem_in) {
+        if (s_feed_skip++ < 10) rt_log("[movie] feed skip: sp=%p mem_in=%08x samp %08x %08x %08x busy %d%d%d\n",
+            (void *)sp, m->mem_in, m->samp[0], m->samp[1], m->samp[2],
+            m->samp[0] ? m->samp[0]->busy : -1, m->samp[1] ? m->samp[1]->busy : -1, m->samp[2] ? m->samp[2]->busy : -1);
+        return;
+    }
+    uint32_t size = (uint32_t)m->w * (uint32_t)m->h * 4;
+    if (!s_feed_buf && !(s_feed_buf = calloc(1, size))) return;
+    sp->busy = 1; sp->com.refs = 1;
+    sp->len = size;
+    sp->t0 = (int64_t)(sceAvPlayerCurrentTime(s_h) * 1e4); sp->t1 = sp->t0 + 333667;
+    sp->have_time = 1; sp->sync = 1;
+    uint32_t rhr = gcall(c, m->mem_in, 6, 1, sp->com.guest);            // the sample buffer stays black
+    sp->com.refs = 0; sp->busy = 0;
+    if ((int32_t)rhr < 0) rt_log("[movie] avplayer feed: Receive -> %08x\n", rhr);
+    else if ((++s_feed_n % 30) == 0) rt_log("[movie] avplayer feed: %u samples sent, last Receive %08x\n", s_feed_n, rhr);
+}
+
+// 1 once the video stream info is available (fills s_vw/s_vh/s_dur; stream creation is async on Vita3K
+// and on the Vita — the vitasdk sample queries it in the STREAM_CREATED event, not right after AddSource)
+static int av_read_stream_info(void) {
+    SceAvPlayerStreamInfo si;
+    for (int i = 0; i < 2; i++) {
+        if (sceAvPlayerGetStreamInfo(s_h, (uint32_t)i, &si) != 0) continue;
+        if (si.type == (uint32_t)SCE_AVPLAYER_VIDEO && !s_vw) { s_vw = (int)si.details.video.width; s_vh = (int)si.details.video.height; }
+        if (si.duration > (uint64_t)(s_dur * 1000)) s_dur = (double)si.duration / 1000.0;
+    }
+    return s_vw && s_vh;
+}
+static int movie_pot(int v);
+static void av_create_vtex(void);
+
+static int av_thread(void *arg) {
+    Movie *m = arg;
+    sceKernelChangeThreadCpuAffinityMask(sceKernelGetThreadId(), SCE_KERNEL_CPU_MASK_USER_2);
+    const uint32_t cap = sizeof g_ring / sizeof g_ring[0];
+    uint64_t hz = SDL_GetPerformanceFrequency(), st0 = SDL_GetPerformanceCounter();
+    const uint64_t tstart = st0;            // for the startup grace before IsActive may be trusted (see EOF below)
+    int saw_active = 0;
+    double aud_acc = 0;
+    unsigned long long run0 = 0; uint32_t pre0 = 0;
+    int eof = 0;
+    float *pcm = NULL; size_t pcmcap = 0;
+    while (!m->stop) {
+        if (m->state == 2 && s_h != -1) {
+            if (!s_vw && av_read_stream_info()) {      // async stream creation: the size can arrive only after Start
+                g_movie_w = movie_pot(s_vw); g_movie_h = movie_pot(s_vh);
+                m->w = s_vw; m->h = s_vh;              // the feed sizes its black samples from these
+                av_create_vtex();
+                rt_log("[movie] avplayer: stream info %dx%d %.2f s\n", s_vw, s_vh, s_dur);
+            }
+            uint64_t a0 = SDL_GetPerformanceCounter();
+            int npull = 0;
+            while (npull++ < 16 && (g_ring_w - g_ring_r + cap) % cap < 48000) {   // keep ~0.5 s of audio ahead
+                SceAvPlayerFrameInfo fi;
+                if (!sceAvPlayerGetAudioData(s_h, &fi)) break;
+                int ch = fi.details.audio.channelCount ? (int)fi.details.audio.channelCount : 2;
+                int frames = (int)fi.details.audio.size / (2 * ch);
+                if (frames > 0) {
+                    if (pcmcap < (size_t)frames * 2) { free(pcm); pcmcap = (size_t)frames * 2; pcm = malloc(pcmcap * sizeof(float)); }
+                    if (pcm) {
+                        const int16_t *s16 = (const int16_t *)fi.pData;
+                        for (int i = 0; i < frames * 2; i++) pcm[i] = s16[i] * (1.0f / 32768.0f);
+                        movie_audio_push(pcm, frames, (int)fi.details.audio.sampleRate);
+                    }
+                }
+            }
+            aud_acc += (double)(SDL_GetPerformanceCounter() - a0) * 1000.0 / (double)hz;
+            SceAvPlayerFrameInfo vi;
+            while (sceAvPlayerGetVideoData(s_h, &vi)) {
+                if (!s_vframes_total) rt_log("[movie] avplayer: premiere frame %ux%u\n", vi.details.video.width, vi.details.video.height);
+                s_vframes++; s_vframes_total++; av_stage(&vi);
+            }
+            // The game's loop rate follows the feed rate (run 20/21), and the decoder's arrival jitters (demuxer
+            // reads in 64 KB chunks), so pace the feed on the display instead: one sample per 2 vblanks = exactly
+            // 30/s, phase-locked. The sample carries no pixels (the video shows through the staged texture), so
+            // pacing it independently of frame arrival is safe; gating per arriving frame dropped early frames (20 fps, run 22).
+            if (s_feed) {
+                static uint32_t s_feed_v;
+                uint32_t v = sceDisplayGetVcount();
+                if ((int32_t)(v - s_feed_v) >= 2) { s_feed_v = v; av_feed_dummy(m, m->dec_cpu); }
+            }
+            // IsActive is false while the stream is still being created (~1 s after AddSource): both the vitaGL
+            // sample and OpenFMV only treat it as end-of-file once a frame was decoded. Treat it as EOF before
+            // that only after a 10 s grace, so a dead player still ends the movie instead of hanging.
+            int active = sceAvPlayerIsActive(s_h);
+            if (active && !saw_active) { saw_active = 1; rt_log("[movie] avplayer: player actif\n"); }
+            if (!eof && (s_av_end || (!active && (s_vframes_total || SDL_GetPerformanceCounter() - tstart > 10 * hz)))) {
+                eof = 1;
+                rt_log("[movie] avplayer: fin de flux (%llu frames pulled)\n", s_vframes);
+                if (m->rpin) gcall(m->dec_cpu, m->rpin, 14, 0);          // EndOfStream -> the renderer notifies EC_COMPLETE
+                for (int i = 0; i < 20 && !m->nev && !m->nsink; i++) SDL_Delay(50);
+                if (!m->nev && !m->nsink) { rt_log("[movie] avplayer: EC_COMPLETE de secours\n"); rpush(NULL, 1, 0, 0); }
+                m->ended = 1;
+                break;
+            }
+        }
+        uint64_t now = SDL_GetPerformanceCounter();
+        if (now - st0 > 2 * hz) {
+            double sec = (double)(now - st0) / (double)hz;
+            double cpu_ms = 0; unsigned pre = 0;
+            SceKernelThreadInfo ti = {.size = sizeof ti};
+            if (!sceKernelGetThreadInfo(sceKernelGetThreadId(), &ti)) {
+                cpu_ms = (double)(ti.runClocks - run0) / 1000.0 / sec; pre = ti.threadPreemptCount - pre0;
+                run0 = ti.runClocks; pre0 = ti.threadPreemptCount;
+            }
+            rt_log("[movie] avplayer t=%.1f s: %.1f frames/s pulled, audio %.0f ms/s, ring %.2f s; thread: %.0f ms CPU/s, preemptions %u\n",
+                   sceAvPlayerCurrentTime(s_h) / 1000.0, s_vframes / sec, aud_acc / sec,
+                   (double)((g_ring_w - g_ring_r + cap) % cap) / 2.0 / 48000.0, cpu_ms, pre);
+            s_vframes = 0; aud_acc = 0; st0 = now;
+        }
+        SDL_Delay(4);
+    }
+    free(pcm);
+    return 0;
+}
+
+static int movie_pot(int v) { int p = 1; while (p < v) p <<= 1; return p; }
+
+// open <host with .mp4> if it exists; 1 on success (s_h, s_vw/s_vh, s_dur set)
+static int av_open(const char *host) {
+    char mp4[700];
+    size_t n = strlen(host);
+    if (n <= 4 || n > sizeof mp4 - 4) return 0;
+    memcpy(mp4, host, n - 4); mp4[n - 4] = 0;
+    strncat(mp4, ".mp4", sizeof mp4 - strlen(mp4) - 1);
+    int fd = sceIoOpen(mp4, SCE_O_RDONLY, 0);
+    if (fd < 0) return 0;
+    sceIoClose(fd);
+    static int loaded;
+    if (!loaded) { sceSysmoduleLoadModule(SCE_SYSMODULE_AVPLAYER); loaded = 1; }
+    static SceAvPlayerInitData init;
+    memset(&init, 0, sizeof init);
+    { const char *tx = getenv("SH3_MV_TEX"); av_tex_cd = !(tx && !strcmp(tx, "phy")); }   // default cd (console-tested); SH3_MV_TEX=phy: phycont
+    { const char *cc = getenv("SH3_MV_CSC"); if (cc && !strcmp(cc, "0")) s_yuv_fmt = VGL_YUV420P_NV12_BT601; }
+    // sceAppUtilInit before using the player, as OpenFMV does (on by default: the console-tested setup had it;
+    // runs 10-11 showed the player works without it too). SH3_MV_APPUTIL=0 skips it.
+    if (!(getenv("SH3_MV_APPUTIL") && !strcmp(getenv("SH3_MV_APPUTIL"), "0"))) {
+        static int apputil_done;
+        if (!apputil_done) {
+            apputil_done = 1;
+            int ar = sceAppUtilInit(&(SceAppUtilInitParam){}, &(SceAppUtilBootParam){});
+            rt_log("[movie] avplayer: sceAppUtilInit -> %08x\n", (unsigned)ar);
+        }
+    }
+    {   // what the module will find when it allocates: the free pools at init time
+        SceKernelFreeMemorySizeInfo fi = {.size = sizeof fi};
+        sceKernelGetFreeMemorySize(&fi);
+        rt_log("[movie] avplayer: init with tex=%s, free user %d KB cdram %d KB phycont %d KB\n",
+               av_tex_cd ? "cd" : "phy", fi.size_user >> 10, fi.size_cdram >> 10, fi.size_phycont >> 10);
+    }
+    init.memoryReplacement = (SceAvPlayerMemReplacement){NULL, av_alloc, av_free, av_alloc_tex, av_free_tex};
+    // SH3_MV_NOREP=1: exactly the vitaGL sample setup — no file replacement (the module opens the path itself)
+    // and autoStart, to separate a file-callback problem from a decoder problem without rebuilding.
+    const char *nr = getenv("SH3_MV_NOREP");
+    int no_rep = nr && !strcmp(nr, "1");
+    if (!no_rep)
+        init.fileReplacement = (SceAvPlayerFileReplacement){&s_fd_slot, avf_open, avf_close, avf_read, avf_size};
+    init.eventReplacement = (SceAvPlayerEventReplacement){NULL, av_event};
+    {   // SH3_MV_DBG: the player's own log level (the Sony module prints why a source fails; emulator diagnosis)
+        const char *dg = getenv("SH3_MV_DBG");
+        init.debugLevel = dg ? (uint32_t)atoi(dg) : 0;
+    }
+    const char *pr = getenv("SH3_MV_PRIO");
+    init.basePriority = pr ? (uint32_t)strtoul(pr, NULL, 0) : 0xA0;   // a real thread priority (0-255): the player creates its demux thread at this priority (OpenFMV uses 0xA0; 0x200000 makes sceKernelCreateThread fail — seen on Vita3K as "Demux thread creation failed")
+    init.numOutputVideoFrameBuffers = 5;   // OpenFMV's value: 5 NV12 buffers of 512x384 fit the memory left free (cd: 5 x 512 KB of CDRAM, phy: 5 x 1 MB of phycont)
+    // Both working references (vitaGL sample, OpenFMV) use autoStart=1 and never call Start: calling Start before
+    // the stream exists returns 0x806A0002, which we used to misread as the player dying. SH3_MV_AUTOSTART=0 reverts.
+    { const char *as = getenv("SH3_MV_AUTOSTART"); s_autostart = !(as && !strcmp(as, "0")); init.autoStart = s_autostart; }
+    // defaultLanguage left zero like OpenFMV's proven InitData (a tag with no matching stream may make the module reject the source)
+    s_h = sceAvPlayerInit(&init);
+    if (!av_h_ok(s_h)) { rt_log("[movie] avplayer: init %s -> %08x\n", mp4, (unsigned)s_h); return 0; }
+    if (sceAvPlayerAddSource(s_h, mp4) < 0) {
+        rt_log("[movie] avplayer: AddSource %s failed\n", mp4);
+        sceAvPlayerClose(s_h); s_h = -1; return 0;
+    }
+    s_dur = 0; s_vw = s_vh = 0;
+    av_read_stream_info();
+    s_av_end = 0; s_vframes = 0; s_vframes_total = 0;
+    rt_log("[movie] avplayer: %s %dx%d %.2f s (prio %x%s)%s\n", mp4, s_vw, s_vh, s_dur,
+           (unsigned)init.basePriority, no_rep ? ", no file replacement" : "", s_autostart ? "" : ", manual Start");
+    return 1;
+}
+
+static void av_close(void) {
+    if (s_h != -1) { sceAvPlayerStop(s_h); sceAvPlayerClose(s_h); s_h = -1; }
+    g_movie_avplayer = 0;
+    if (s_av_mx) {   // the staging ring belongs to the closed movie
+        SDL_LockMutex(s_av_mx);
+        s_av_qh = s_av_qt = 0; s_av_seq = 0; s_av_pick = 0; s_av_late = 0;
+        for (int i = 0; i < AVQ; i++) s_av_busy[i] = 0;
+        SDL_UnlockMutex(s_av_mx);
+    }
+}
+
+// ---- drawing the video: replace the game's movie quad at record time (keeps the whrlays on top) ----
+typedef struct { float x, y, z, rhw; uint32_t color; float u, v; } AvVertex;   // same layout as console_ui
+static Texture *s_vtex;                       // host-owned YUV texture (created once, kept)
+static uint32_t s_av_vb;                      // its vertex buffer, guest memory
+static volatile int s_av_in_record;           // reentrancy guard (av_record_quad calls prep_draw)
+static volatile unsigned s_av_drawn;          // intercepted quad draws since the last Present
+static unsigned s_av_hit_frames, s_av_miss_frames;
+static uint64_t s_av_stat_t;
+
+static void av_create_vtex(void) {
+    if (!s_vw || !s_vh) return;                        // stream info still pending
+    if (!s_av_mx) s_av_mx = SDL_CreateMutex();
+    if (!s_vtex) {
+        s_vtex = calloc(1, sizeof *s_vtex);
+        s_vtex->com.kind = K_TEXTURE; s_vtex->com.refs = 1;
+        s_vtex->w = (uint32_t)s_vw; s_vtex->h = (uint32_t)s_vh;
+        s_vtex->levels = 1; s_vtex->fmt = FMT_A8R8G8B8; s_vtex->pool = 1;
+        s_vtex->yuv = 1; s_vtex->keep = 1;
+        s_padw = movie_pot(s_vw); s_padh = movie_pot(s_vh);   // movie_pot is defined below
+    }
+    if (!s_av_vb) s_av_vb = gheap_alloc(sizeof(AvVertex) * 6);   // optional: the quad falls back to the host buffer below
+}
+
+// fullscreen opaque quad over the current viewport, fixed-function pipeline (the console_ui recipe)
+static void av_record_quad(Device *d) {
+    static AvVertex s_av_quad[6];   // host fallback: the guest heap is nearly full during movies (heap 31/32 MB)
+    static int ar_n;
+    if (!s_vtex || s_av_in_record) {
+        if (ar_n++ < 3) rt_log("[movie] quad skip: vtex %p inrec %d\n", (void *)s_vtex, s_av_in_record);
+        return;
+    }
+    if (ar_n++ < 3) rt_log("[movie] quad rec: vp %d,%d %dx%d gl %u vb %08x\n", (int)d->vp.x, (int)d->vp.y, (int)d->vp.w, (int)d->vp.h, s_vtex->gl, s_av_vb);
+    float x = d->vp.x - .5f, y = d->vp.y - .5f, w = (float)d->vp.w, h = (float)d->vp.h;
+    const uint32_t white = 0xffffffffu;
+    float ue = s_padw ? (float)s_vw / s_padw : 1.0f, ve = s_padh ? (float)s_vh / s_padh : 1.0f;   // padded texture: sample only the used region
+    AvVertex q[6] = {
+        {x, y, 0, 1, white, 0, 0}, {x + w, y, 0, 1, white, ue, 0}, {x + w, y + h, 0, 1, white, ue, ve},
+        {x, y, 0, 1, white, 0, 0}, {x + w, y + h, 0, 1, white, ue, ve}, {x, y + h, 0, 1, white, 0, ve},
+    };
+    void *vbuf = s_av_vb ? g_mem + s_av_vb : (void *)s_av_quad;
+    memcpy(vbuf, q, sizeof q);
+    // The game's own render state at Present time culls the quad away (run 14: recorded, uploaded, invisible).
+    // Apply console_ui's proven full state (it zeroes rs/tss, then the six values its overlay needs), save/restore.
+    static uint32_t rs0[256], tss0[MAX_STAGES][32];
+    memcpy(rs0, d->rs, sizeof rs0); memcpy(tss0, d->tss, sizeof tss0);
+    uint32_t rs[256] = {0}, tss[MAX_STAGES][32] = {{0}};
+    rs[19] = 5; rs[20] = 6; rs[22] = 1; rs[27] = 1; rs[168] = 15; rs[171] = 1;
+    tss[0][1] = 4; tss[0][2] = 2; tss[0][3] = 0; tss[0][4] = 4; tss[0][5] = 2; tss[0][6] = 0;   // MODULATE(TEXTURE, CURRENT)
+    tss[0][13] = tss[0][14] = 3; tss[0][16] = tss[0][17] = 2;
+    for (unsigned i = 1; i < MAX_STAGES; i++) tss[i][1] = 1;             // other stages off
+    Texture *t0 = d->tex[0];
+    uint32_t vs0 = d->vs, ps0 = d->ps;
+    Texture *vt = s_vtex;
+    prep_set(&d->tex[0], &vt, sizeof vt);
+    prep_set(d->rs, rs, sizeof rs);
+    prep_set(d->tss, tss, sizeof tss);
+    PSET(vs, 0x144); PSET(ps, 0);
+    s_av_in_record = 1;
+    prep_draw(d, 4, 0, 6, 2, NULL, 0, 0, vbuf, sizeof(AvVertex));
+    s_av_in_record = 0;
+    prep_set(&d->tex[0], &t0, sizeof t0);
+    prep_set(d->rs, rs0, sizeof rs0);
+    prep_set(d->tss, tss0, sizeof tss0);
+    PSET(vs, vs0); PSET(ps, ps0);
+}
+
+// prep_draw entry: 1 if this draw is the game's movie quad and was replaced by the video quad
+int movie_vita_override(Device *d, uint32_t prim, uint32_t nverts, uint32_t nprims) {
+    (void)prim; (void)nverts;
+    if (!g_movie_avplayer || !s_vtex || s_av_in_record) return 0;
+    if (nprims > 2) return 0;                                           // the movie quad is two triangles
+    for (int s = 0; s < MAX_STAGES; s++) {
+        Texture *t = d->tex[s];
+        if (t && t != s_vtex && t->levels == 1 && !(t->usage & 1) &&
+            t->w == (uint32_t)g_movie_w && t->h == (uint32_t)g_movie_h) {
+            s_av_drawn++;
+            av_record_quad(d);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// Present entry: if the game never drew its movie quad this frame, show the video at Present instead
+// (the whrlays then end up under it: the console log tells which case the game is in).
+void movie_vita_present(Device *d) {
+    av_reap_tex();                                    // unmap blocks the module freed from its own thread
+    if (!g_movie_avplayer || !s_vtex) return;
+    s_av_pick = 1;                                    // this Presented frame may consume one staged frame (FIFO)
+    if (s_av_drawn) s_av_hit_frames++;
+    else if (g_mv && !g_mv->ended && g_mv->state) { av_record_quad(d); s_av_miss_frames++; }
+    s_av_drawn = 0;
+    uint64_t now = SDL_GetPerformanceCounter(), hz = SDL_GetPerformanceFrequency();
+    if (!s_av_stat_t) s_av_stat_t = now;
+    if (now - s_av_stat_t > 2 * hz) {
+        rt_log("[movie] avplayer draw: %u frames via the game quad, %u at Present\n", s_av_hit_frames, s_av_miss_frames);
+        s_av_hit_frames = s_av_miss_frames = 0; s_av_stat_t = now;
+    }
+}
+#endif /* __vita__ (sceAvPlayer path) */
+
 static plm_frame_t *g_pending;
 // Video decode time: gap between two plm_decode callbacks (g_cb_t reset at the start of each plm_decode).
 // Audio: measured in its own thread.
@@ -907,6 +1494,21 @@ M(ctl, Run) {
     if (m->state != 2) {
         if (m->renderer) gcall(c, m->renderer, 6, 2, 0u, 0u); // Run(tStart=0)
         m->state = 2;
+#ifdef __vita__
+        if (g_movie_avplayer) {
+            if (s_h != -1) {
+                if (!m->thread) {
+                    m->dec_cpu = rt_new_cpu(1u << 20);
+                    av_create_vtex();
+                    s_av_end = 0;
+                    int sr = s_autostart ? 0 : sceAvPlayerStart(s_h);   // autoStart: AddSource already started the stream; an early Start only returns 0x806A0002
+                    m->thread = SDL_CreateThread(av_thread, "movie_av", m);
+                    rt_log("[movie] avplayer: start %s-> %08x, feed=%d\n", s_autostart ? "(skipped, autoStart) " : "", (unsigned)sr, s_feed);
+                } else sceAvPlayerResume(s_h);
+            }
+            STDRET(1, HR_OK);
+        }
+#endif
         if (!m->thread && !m->ended) {
             m->dec_cpu = rt_new_cpu(1u << 20);
             size_t fs = (size_t)((m->w + 15) & ~15) * ((m->h + 15) & ~15) * 3 / 2;
@@ -928,7 +1530,11 @@ M(ctl, Run) {
     }
     STDRET(1, HR_OK);
 }
-M(ctl, Pause) { HOSTFN; MV; m->state = 1; if (m->renderer) gcall(c, m->renderer, 5, 0); STDRET(1, HR_OK); }
+M(ctl, Pause) { HOSTFN; MV;
+#ifdef __vita__
+    if (g_movie_avplayer && m->state == 2 && s_h != -1) sceAvPlayerPause(s_h);
+#endif
+    m->state = 1; if (m->renderer) gcall(c, m->renderer, 5, 0); STDRET(1, HR_OK); }
 M(ctl, Stop) {
     HOSTFN; MV;
     { extern unsigned g_frame; rt_log("[movie-stop] frame=%u\n", g_frame); }
@@ -936,6 +1542,9 @@ M(ctl, Stop) {
     if (m->thread) { SDL_WaitThread(m->thread, NULL); m->thread = NULL; }
     if (m->othread) { SDL_WaitThread(m->othread, NULL); m->othread = NULL; }
     if (m->athread) { SDL_WaitThread(m->athread, NULL); m->athread = NULL; }
+#ifdef __vita__
+    if (g_movie_avplayer) av_close();     // the hardware player belongs to this movie: release it
+#endif
     if (m->state && m->renderer) gcall(c, m->renderer, 4, 0);  // Stop
     m->state = 0;
     g_movie_w = g_movie_h = 0;
@@ -956,17 +1565,40 @@ M(ctl, Disp) { STDRET(2, E_NOTIMPL_); }
 static const gfn ctl_vt[] = {any_QI, any_AddRef, any_Release, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Run,
     ctl_Pause, ctl_Stop, ctl_GetState, ctl_NI, ctl_NI, ctl_NI, ctl_NI, ctl_Pause};
 
-M(pos, Duration) { HOSTFN; MV; W64(ARG(2), rt_u64f(m->plm ? plm_get_duration(m->plm) : 0)); STDRET(2, HR_OK); }
+M(pos, Duration) {
+    HOSTFN; MV;
+    double dur = 0;
+#ifdef __vita__
+    if (g_movie_avplayer) dur = s_dur; else
+#endif
+    if (m->plm) dur = plm_get_duration(m->plm);
+    W64(ARG(2), rt_u64f(dur)); STDRET(2, HR_OK);
+}
 // ponytail: audio only follows a rewind to the start outside playback (the only expected case); a real seek would need plm_demux_seek.
 M(pos, PutCur) {
     HOSTFN; MV;
     double t = rt_f64(((uint64_t)ARG(3) << 32) | ARG(2));
     rt_log("[movie] PutCurrentPosition(%.2f)\n", t);
+#ifdef __vita__
+    if (g_movie_avplayer) {
+        if (s_h != -1) sceAvPlayerJumpToTime(s_h, (uint64_t)(t * 1000));
+        movie_audio_flush();
+        STDRET(3, HR_OK);
+    }
+#endif
     if (m->plm) plm_seek(m->plm, t, 0);
     if (m->aud && !m->athread && t == 0) { plm_demux_rewind(m->adm); plm_audio_rewind(m->aud); movie_audio_flush(); }
     STDRET(3, HR_OK);
 }
-M(pos, GetCur) { HOSTFN; MV; W64(ARG(2), rt_u64f(m->plm ? plm_get_time(m->plm) : 0)); STDRET(2, HR_OK); }
+M(pos, GetCur) {
+    HOSTFN; MV;
+    double t = 0;
+#ifdef __vita__
+    if (g_movie_avplayer) t = s_h != -1 ? (double)sceAvPlayerCurrentTime(s_h) / 1000.0 : 0; else
+#endif
+    if (m->plm) t = plm_get_time(m->plm);
+    W64(ARG(2), rt_u64f(t)); STDRET(2, HR_OK);
+}
 M(pos, Gen2) { STDRET(2, HR_OK); }
 M(pos, Gen3) { STDRET(3, HR_OK); }
 static const gfn pos_vt[] = {any_QI, any_AddRef, any_Release, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Disp, pos_Duration,
@@ -1011,7 +1643,7 @@ M(au, GetVol) { HOSTFN; MV; W32(ARG(2), (uint32_t)m->vol); STDRET(2, HR_OK); }
 static const gfn au_vt[] = {any_QI, any_AddRef, any_Release, ctl_Disp, ctl_Disp, ctl_Disp, ctl_Disp, au_PutVol,
     au_GetVol, pos_Gen2, au_GetVol};
 
-M(sink, Notify) { HOSTFN; rt_log("[movie] event %u (%08x, %08x)\n", ARG(2), ARG(3), ARG(4)); rpush(c, ARG(2), ARG(3), ARG(4)); STDRET(4, HR_OK); }
+M(sink, Notify) { HOSTFN; rt_log("[movie] event %u (%08x, %08x)\n", ARG(2), ARG(3), ARG(4)); if (g_mv) g_mv->nsink++; rpush(c, ARG(2), ARG(3), ARG(4)); STDRET(4, HR_OK); }
 static const gfn sink_vt[] = {any_QI, any_AddRef, any_Release, sink_Notify};
 
 // ---------- IGraphBuilder ----------
@@ -1140,6 +1772,21 @@ M(gr, Render) {
     STDRET(2, hr);
 }
 static uint32_t movie_open_source(Movie *m, const char *host) {
+#ifdef __vita__
+    {   // preconverted MP4 + hardware decoder (tools/convert_movies.py); SH3_MV_MP4=0 disables it
+        const char *off = getenv("SH3_MV_MP4"), *e = strrchr(host, '.');
+        if ((!off || strcmp(off, "0")) && e && !strcasecmp(e, ".000") && av_open(host)) {
+            m->w = s_vw; m->h = s_vh;
+            g_movie_w = s_vw ? movie_pot(s_vw) : 0; g_movie_h = s_vh ? movie_pot(s_vh) : 0;   // the game's own texture size (512x512 for 512x384); 0 until the async stream info arrives
+            g_movie_avplayer = 1;
+            const char *feed = getenv("SH3_MV_FEED");
+            s_feed = !(feed && !strcmp(feed, "0"));   // default on: without samples the game's movie loop runs at 10 fps
+            m->nsink = 0;
+            rt_log("[movie-mode] avplayer (mp4), feed=%d, game texture %dx%d\n", s_feed, g_movie_w, g_movie_h);
+            return HR_OK;
+        }
+    }
+#endif
     const char *cache = getenv("SH4_MOVIE_CACHE"), *all = getenv("SH4_MOVIE_ALL_FRAMES");
     int use_cache = cache && !strcmp(cache, "1");
     const char *ext = strrchr(host, '.');
@@ -1236,6 +1883,9 @@ int movie_cocreate(CPU *c, uint32_t clsid, uint32_t riid, uint32_t out, uint32_t
             if (g_mv->thread) { SDL_WaitThread(g_mv->thread, NULL); g_mv->thread = NULL; }
             if (g_mv->othread) { SDL_WaitThread(g_mv->othread, NULL); g_mv->othread = NULL; }
             if (g_mv->athread) { SDL_WaitThread(g_mv->athread, NULL); g_mv->athread = NULL; }
+#ifdef __vita__
+            if (g_movie_avplayer) av_close();
+#endif
             movie_free_decoders(g_mv);
         }
         // ponytail: the rest of the previous movie (COM objects, ~1 KB) leaks

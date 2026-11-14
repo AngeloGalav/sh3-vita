@@ -25,7 +25,7 @@ enum { OP_PAD, OP_ENABLE, OP_DISABLE, OP_TEXPARAM, OP_BINDFB, OP_BINDTEX, OP_VIE
        OP_ACTIVETEX, OP_VAP, OP_U4FV, OP_U1I, OP_U1F, OP_USEPROG, OP_ENVA, OP_DISVA, OP_DRAW, OP_CLEARCOL, OP_CLEARDEPTH,
        OP_CLEARSTENCIL, OP_DEPTHRANGE, OP_DEPTHFUNC, OP_DEPTHMASK, OP_STENCILMASK, OP_STENCILOP, OP_STENCILFUNC, OP_SCISSOR,
        OP_POLYOFF, OP_FRONTFACE, OP_CULLFACE, OP_BLENDFUNC, OP_BLENDEQ, OP_BINDBUF, OP_BUFDATA, OP_BUFSUB, OP_DELBUF, OP_DELTEX,
-       OP_DELRB, OP_BINDRB, OP_RBSTORAGE, OP_FBRB, OP_SWAP, OP_TEX565 };
+       OP_DELRB, OP_BINDRB, OP_RBSTORAGE, OP_FBRB, OP_SWAP, OP_TEX565, OP_TEX_YUV };
 
 int q_on = -1;
 static uint32_t *ring;
@@ -226,6 +226,11 @@ static void exec_inner(unsigned op, const uint32_t *a) {
         glTexSubImage2D(GL_TEXTURE_2D, (GLint)a[0], 0, 0, (GLsizei)a[1], (GLsizei)a[2], GL_RGB, GL_UNSIGNED_SHORT_5_6_5, (const void *)(uintptr_t)a[3]);
         *(volatile int *)(uintptr_t)a[4] = 0;
         break;
+    case OP_TEX_YUV:
+        glCompressedTexImage2D(GL_TEXTURE_2D, 0, (GLenum)a[5], (GLsizei)a[0], (GLsizei)a[1], 0, (GLsizei)a[2], (const void *)(uintptr_t)a[3]);
+        { static int yuv_n; if (yuv_n++ < 2) rt_log("[q] OP_TEX_YUV %ux%u %u B fmt %04x err %04x\n", a[0], a[1], a[2], a[5], glGetError()); }
+        *(volatile int *)(uintptr_t)a[4] = 0;
+        break;
     case OP_SWAP: {
         uint32_t t0 = NOW();
         vglSwapBuffers(GL_FALSE);
@@ -401,7 +406,7 @@ static void play(int interp) {
                 const float *r = u < U_MAX && u < uk_nu ? rep[u] : NULL;
                 u++;
                 if (r) { glUniform4fv((GLint)a[0], op == OP_U4FV ? (GLsizei)a[1] : 1, r); continue; }
-            } else if (op == OP_TEX565 || op == OP_DELBUF || op == OP_DELTEX || op == OP_DELRB) continue;
+            } else if (op == OP_TEX565 || op == OP_TEX_YUV || op == OP_DELBUF || op == OP_DELTEX || op == OP_DELRB) continue;
         }
         exec(op, a);
     }
@@ -604,6 +609,13 @@ void q_tex565(GLint level, GLsizei w, GLsizei h, const void *px, volatile int *b
     QENTER(glTexSubImage2D(GL_TEXTURE_2D, level, 0, 0, w, h, GL_RGB, GL_UNSIGNED_SHORT_5_6_5, px); *busy = 0);
     uint32_t a[] = {(uint32_t)level, (uint32_t)w, (uint32_t)h, (uint32_t)(uintptr_t)px, (uint32_t)(uintptr_t)busy};
     emit(OP_TEX565, a, 5);
+}
+
+// sceAvPlayer video frame (NV12) as a vitaGL YUV texture (hardware CSC); *busy = 0 once the upload is done
+void q_tex_yuv(GLsizei w, GLsizei h, const void *px, size_t bytes, volatile int *busy, GLenum fmt) {
+    QENTER(glCompressedTexImage2D(GL_TEXTURE_2D, 0, fmt, w, h, 0, (GLsizei)bytes, px); *busy = 0);
+    uint32_t a[] = {(uint32_t)w, (uint32_t)h, (uint32_t)bytes, (uint32_t)(uintptr_t)px, (uint32_t)(uintptr_t)busy, (uint32_t)fmt};
+    emit(OP_TEX_YUV, a, 6);
 }
 
 // 30 fps lock (Vita, default on; SH3_FPS=60 turns it off): the game draws as fast as it can and
