@@ -402,7 +402,12 @@ M(ds, CreateSoundBuffer) {
     uint32_t d = ARG(2), flags = R32(d + 4), bytes = R32(d + 8), wfx = R32(d + 16);
     DSBuf *b = buf_new();
     if (!b) STDRET(4, 0x8007000eu); // E_OUTOFMEMORY
-    b->flags = flags;
+    // DSBCAPS_CTRLDEPTH (0x200) withheld: on depth-enabled buffers the game builds a
+    // DirectSoundFX chain (SetFX slot 0x54, GetObjectInPath slot 0x5c) before Play and drops
+    // the voice when it fails (F_004ee620 0x4ee860); the stubs return errors, so every room
+    // SFX (footsteps/doors/items, flags 0x582c0) was silent. Without the flag the game plays
+    // the buffer directly, like the menu sounds. Volume and pan are set on the direct path.
+    b->flags = flags & ~0x200u;
     b->primary = flags & 1;
     b->is3d = (flags & 0x10) != 0;
     if (!b->primary && wfx) {
