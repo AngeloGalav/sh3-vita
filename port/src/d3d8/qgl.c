@@ -5,6 +5,7 @@
 #include "rt.h"
 #include "audit.h"
 #include <psp2/kernel/threadmgr.h>
+#include <psp2/display.h>
 #include <psp2/kernel/processmgr.h>
 #include <psp2/kernel/cpu.h>
 #include <stdint.h>
@@ -559,7 +560,13 @@ static void q_start(void) {
     const char *e = getenv("SH4_NORTHREAD");
     if (e && *e == '1') { q_on = 0; rt_log("[q] GL queue disabled (SH4_NORTHREAD)\n"); return; }
     e = getenv("SH4_INTERP");   // 60 frames/s by interpolation (default); 0: 30
+#ifdef SH3_PORT
+    // SH3: off unless SH4_INTERP=1. Its intermediate presents undid the 30 fps lock (fps_cap): whenever the render
+    // thread had time it showed 60 fps again (console 2026-11-14: up to 61 intermediate frames per 2 s).
+    int ipw = e && *e == '1';
+#else
     int ipw = !e || *e != '0';
+#endif
     // With interpolation, the ring must absorb a whole frame (hospital ~830 KB) during the render thread's two passes.
     e = getenv("SH4_QRING_KB");
     unsigned kb = e ? (unsigned)atoi(e) : ipw ? 1024 : 512;
@@ -599,7 +606,23 @@ void q_tex565(GLint level, GLsizei w, GLsizei h, const void *px, volatile int *b
     emit(OP_TEX565, a, 5);
 }
 
+// 30 fps lock (Vita, default on; SH3_FPS=60 turns it off): the game draws as fast as it can and
+// alternates between 60 and 20-30 fps. Present waits until two vertical blanks have passed since the
+// previous one, so with vsync every frame stays on screen for two refreshes; a frame that took longer
+// is not delayed further.
+static void fps_cap(void) {
+#ifdef __vita__
+    static int on = -1; static unsigned last;
+    if (on < 0) { const char *e = getenv("SH3_FPS"); on = !(e && atoi(e) >= 60); rt_log("[q] frame cap: %s\n", on ? "30 fps" : "off"); }
+    if (!on) return;
+    unsigned target = last + 2;
+    while ((int)(sceDisplayGetVcount() - target) < 0) sceDisplayWaitVblankStart();
+    last = sceDisplayGetVcount();
+#endif
+}
+
 void q_swap(void) {
+    fps_cap();
     QENTER(vglSwapBuffers(GL_FALSE));
     uint32_t t0 = NOW();
     while (swaps_enq != swaps_done) sceKernelDelayThread(100);   // at most one present in flight
