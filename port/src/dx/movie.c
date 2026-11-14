@@ -14,6 +14,7 @@
 #endif
 
 #include <stdio.h>
+#include <unistd.h>
 // [movie] time spent in movie file reads (decode thread stats)
 static double g_st_io;
 static int g_movie_all_frames;
@@ -649,22 +650,36 @@ static plm_buffer_t *movie_file(const char *host) {
 #include "codec/movie000.c"
 static char g_movie_note[600];                    // last .000 file the game opened (its own source filter reads it)
 void movie_note_file(const char *host) { snprintf(g_movie_note, sizeof g_movie_note, "%s", host); }
-typedef struct { FILE *f; size_t size, pos; uint32_t base; uint8_t chunk[MOVIE000_PERIOD]; long chunk_idx; } MovieDec;
+// .000 reader. Each 4 KB period is decrypted from the same LCG base, so periods can be read in any grouping.
+// It used to fseek + fread one 4 KB period at a time; newlib's fseek drops the FILE buffer, so on the Vita every
+// 4 KB became its own seek + read on the memory card, for two readers (video and audio demux the whole file):
+// ~250 card accesses per second for op.000 (97 MB / 192 s). Now a span of 64 periods (256 KB) per read, with a seek
+// only when the reader jumps; the bytes handed to pl_mpeg are the same.
+#define MOVIE_DEC_SPAN (64 * MOVIE000_PERIOD)
+typedef struct { FILE *f; size_t size, pos, fpos; uint32_t base; uint8_t *chunk; long chunk_idx; } MovieDec;
 static void movie_dec_load(plm_buffer_t *buffer, void *user) {
     MovieDec *d = user;
     if (buffer->discard_read_bytes) plm_buffer_discard_read_bytes(buffer);
     while (buffer->length < buffer->capacity && d->pos < d->size) {
-        long idx = (long)(d->pos / MOVIE000_PERIOD);
-        size_t off = d->pos % MOVIE000_PERIOD, want = MOVIE000_PERIOD;
+        long idx = (long)(d->pos / MOVIE_DEC_SPAN);
+        size_t off = d->pos % MOVIE_DEC_SPAN, want = MOVIE_DEC_SPAN;
         if (idx != d->chunk_idx) {
-            size_t n = 0;
-            if (!fseek(d->f, (long)(MOVIE000_HEADER_SIZE + (size_t)idx * MOVIE000_PERIOD), SEEK_SET))
-                n = fread(d->chunk, 1, want, d->f);
+            size_t n = 0, at = MOVIE000_HEADER_SIZE + (size_t)idx * MOVIE_DEC_SPAN;
+            // read()/lseek() on the descriptor, not fread: newlib splits a buffered fread into reads the size of the
+            // FILE buffer, so even 256 KB came off the card in small sceIoRead calls (console: ~750 ms of reads per
+            // second per reader while op.000 needs ~0.5 MB/s).
+            int fd = fileno(d->f);
+            if (d->fpos == at || lseek(fd, (off_t)at, SEEK_SET) == (off_t)at) {
+                uint64_t t = SDL_GetPerformanceCounter();
+                while (n < want) { ssize_t r = read(fd, d->chunk + n, want - n); if (r <= 0) break; n += (size_t)r; }
+                g_st_io += (double)(SDL_GetPerformanceCounter() - t) * 1000.0 / (double)SDL_GetPerformanceFrequency();
+            }
+            d->fpos = n == want ? at + n : (size_t)-1;
             if (n < want) memset(d->chunk + n, 0, want - n);
             if (n >= 4) movie000_decrypt(d->chunk, n & ~(size_t)3, d->base);
             d->chunk_idx = idx;
         }
-        size_t take = MOVIE000_PERIOD - off;
+        size_t take = MOVIE_DEC_SPAN - off;
         if (take > buffer->capacity - buffer->length) take = buffer->capacity - buffer->length;
         if (take > d->size - d->pos) take = d->size - d->pos;
         memcpy(buffer->bytes + buffer->length, d->chunk + off, take);
@@ -678,6 +693,7 @@ static void movie_dec_free(void *p) {
     MovieDec *d = p;
     if (!d) return;
     if (d->f) fclose(d->f);
+    free(d->chunk);
     free(d);
 }
 static plm_buffer_t *movie_dec_file(const char *host, void **out) {
@@ -687,7 +703,9 @@ static plm_buffer_t *movie_dec_file(const char *host, void **out) {
     MovieDec *d = calloc(1, sizeof *d);
     if (!hdr || !d || fseek(f, 0, SEEK_END) || ftell(f) <= MOVIE000_HEADER_SIZE || fseek(f, 0, SEEK_SET) ||
         fread(hdr, 1, MOVIE000_HEADER_SIZE, f) != MOVIE000_HEADER_SIZE) { free(hdr); free(d); fclose(f); return NULL; }
-    d->f = f; d->chunk_idx = -1;
+    d->f = f; d->chunk_idx = -1; d->fpos = (size_t)-1;
+    d->chunk = malloc(MOVIE_DEC_SPAN);
+    if (!d->chunk) { free(hdr); movie_dec_free(d); return NULL; }
     d->base = movie000_base_state(hdr);
     free(hdr);
     fseek(f, 0, SEEK_END);
