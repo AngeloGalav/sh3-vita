@@ -3,7 +3,7 @@
 #include "rt.h"
 #include <SDL.h>
 
-enum { H_FREE, H_FILE, H_EVENT, H_MUTEX, H_THREAD, H_REGKEY, H_TIMER, H_MAPPING };
+enum { H_FREE, H_FILE, H_EVENT, H_MUTEX, H_THREAD, H_REGKEY, H_TIMER, H_MAPPING, H_FIND };
 
 uint32_t h_new(int type, void *obj);
 void *h_get(uint32_t h, int type);

@@ -7,6 +7,8 @@
 #include <stdio.h>
 #include <time.h>
 #include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 #define K(name) void imp_KERNEL32_##name(CPU *c)
 #define U(name) void imp_USER32_##name(CPU *c)
@@ -82,9 +84,75 @@ K(CreateFileW) {   // path narrowed to latin-1, then forwarded to CreateFileA (s
 }
 K(DeleteFileA) { HOSTFN; char hp[600]; w32_host_path_w(GSTR(ARG(1)), hp, sizeof hp); STDRET(1, unlink(hp) == 0); }
 K(SetEndOfFile) { STDRET(1, 1); }
-K(FindFirstFileA) { w32_set_last_error(c, 2); STDRET(2, 0xffffffffu); }   // nothing found (saves/config probing)
-K(FindNextFileA) { w32_set_last_error(c, 18); STDRET(2, 0); }
-K(FindClose) { STDRET(1, 1); }
+// FindFirstFileA / FindNextFileA / FindClose over the host folder (w32_host_path: the save-dir overlay first).
+// They used to find nothing, always. After writing data.sys at every boot, SH3 lists the save folder to confirm the
+// save (0x6016b0: FindFirstFileA through IAT 0x68a1e4, failure -> 0x60192c), and MSVC's _stat (0x664aa8) is built on
+// FindFirstFileA too: so every boot ended in "Error occurred during system data saving. Data not saved." although
+// the file had been written. Patterns: '*' and '?', case-insensitive; a name without wildcards finds that entry.
+typedef struct { DIR *d; char dir[600], pat[260]; int single; } Find;
+static int find_match(const char *p, const char *s) {
+    for (; *p; p++, s++) {
+        if (*p == '*') { for (;; s++) { if (find_match(p + 1, s)) return 1; if (!*s) return 0; } }
+        if (!*s || (*p != '?' && SDL_tolower((unsigned char)*p) != SDL_tolower((unsigned char)*s))) return 0;
+    }
+    return !*s;
+}
+static void find_fill(CPU *c, uint32_t fd, const char *dir, const char *name) {
+    HOSTFN; (void)c;
+    char hp[900]; struct stat st;
+    SDL_snprintf(hp, sizeof hp, "%s/%s", dir, name);
+    int ok = !stat(hp, &st);
+    for (unsigned i = 0; i < 320; i += 4) W32(fd + i, 0);
+    W32(fd, ok && S_ISDIR(st.st_mode) ? 0x10u : 0x20u);   // FILE_ATTRIBUTE_DIRECTORY / ARCHIVE
+    uint64_t ft = ((uint64_t)(ok ? st.st_mtime : 0) + 11644473600ull) * 10000000ull;   // FILETIME, 100 ns since 1601
+    for (unsigned k = 0; k < 3; k++) { W32(fd + 4 + 8 * k, (uint32_t)ft); W32(fd + 8 + 8 * k, (uint32_t)(ft >> 32)); }
+    W32(fd + 0x20, ok && !S_ISDIR(st.st_mode) ? (uint32_t)st.st_size : 0);
+    size_t n = strlen(name); if (n > 259) n = 259;
+    memcpy(mb + fd + 0x2c, name, n); mb[fd + 0x2c + n] = 0;
+}
+static int find_next(CPU *c, Find *f, uint32_t fd) {
+    if (f->single) { if (f->single++ > 1) return 0; find_fill(c, fd, f->dir, f->pat); return 1; }
+    for (struct dirent *e; f->d && (e = readdir(f->d));)
+        if (find_match(f->pat, e->d_name)) { find_fill(c, fd, f->dir, e->d_name); return 1; }
+    return 0;
+}
+K(FindFirstFileA) {
+    HOSTFN;
+    const char *g = GSTR(ARG(1)); uint32_t fd = ARG(2);
+    char gd[600]; SDL_snprintf(gd, sizeof gd, "%s", g ? g : "");
+    char *sep = strrchr(gd, '\\'); char *sep2 = strrchr(gd, '/'); if (sep2 > sep) sep = sep2;
+    Find *f = calloc(1, sizeof *f);
+    if (!f || !g) { free(f); w32_set_last_error(c, 2); STDRET(2, 0xffffffffu); }
+    SDL_snprintf(f->pat, sizeof f->pat, "%s", sep ? sep + 1 : gd);
+    if (sep) sep[1] = 0; else SDL_snprintf(gd, sizeof gd, ".");   // keep the separator: "C:\\SH3\\" maps to the game folder
+    if (!f->pat[0]) SDL_snprintf(f->pat, sizeof f->pat, ".");      // "dir\\" names the folder itself
+    w32_host_path(gd, f->dir, sizeof f->dir);
+    if (!strpbrk(f->pat, "*?")) {
+        char hp[900]; struct stat st; SDL_snprintf(hp, sizeof hp, "%s/%s", f->dir, f->pat);
+        if (stat(hp, &st)) { w32_host_path(g, hp, sizeof hp); if (stat(hp, &st)) { free(f); w32_set_last_error(c, 2); STDRET(2, 0xffffffffu); } }
+        f->single = 1;
+    } else f->d = opendir(f->dir);
+    if (!find_next(c, f, fd)) { if (f->d) closedir(f->d); free(f); w32_set_last_error(c, 2); rt_log("FindFirstFileA(\"%s\") -> none\n", g); STDRET(2, 0xffffffffu); }
+    uint32_t h = h_new(H_FIND, f);
+    rt_log("FindFirstFileA(\"%s\") -> %x \"%s\"\n", g, h, (const char *)(mb + fd + 0x2c));
+    STDRET(2, h);
+}
+K(FindNextFileA) {
+    HOSTFN;
+    Find *f = h_get(ARG(1), H_FIND);
+    if (f && find_next(c, f, ARG(2))) STDRET(2, 1);
+    w32_set_last_error(c, 18);   // ERROR_NO_MORE_FILES
+    STDRET(2, 0);
+}
+K(FindClose) {
+    HOSTFN;
+    Find *f = h_get(ARG(1), H_FIND);
+    if (!f) STDRET(1, 0);
+    if (f->d) closedir(f->d);
+    free(f);
+    h_close(ARG(1));
+    STDRET(1, 1);
+}
 K(GetCurrentDirectoryA) {
     HOSTFN; const char *s = "C:\\SH3"; uint32_t n = ARG(1), p = ARG(2), l = (uint32_t)strlen(s);
     if (p && n > l) { memcpy(mb + p, s, l + 1); STDRET(2, l); }
