@@ -426,11 +426,14 @@ static unsigned s_m565_n;
 static double s_m565_pts[N565];
 static uint64_t s_m565_ready[N565];
 static unsigned s_m565_serial;
+static volatile int s_m565_consumer;      // the renderer took at least one 565 frame for this movie
+static int s_m565_offer;                  // frames offered since the movie started (probe window)
 static void m565_begin(void) {
     if (!s_m565_mx) return;
     SDL_LockMutex(s_m565_mx);
     s_m565_qh = s_m565_qt; // discard only queued frames, never buffers owned by the renderer
     s_m565_dropped = 0;
+    s_m565_consumer = 0; s_m565_offer = 0;
     SDL_UnlockMutex(s_m565_mx);
 }
 static int m565_queued(int k) { for (unsigned n = s_m565_qh; n != s_m565_qt; n++) if (s_m565_q[n % N565] == k) return 1; return 0; }
@@ -439,6 +442,11 @@ static void m565_put(Movie *m, plm_frame_t *f) {
     if (!s_m565_mx) s_m565_mx = SDL_CreateMutex();
     if (!s_m565_w) { s_m565_w = (unsigned)m->w; s_m565_h = (unsigned)m->h; }
     if (s_m565_w != (unsigned)m->w || s_m565_h != (unsigned)m->h) return;   // ponytail: buffers sized for the first movie (all 640x480)
+    // SH3's movie texture is 512x512 (the game's own), not the 512x384 frame, so resource.c's size test (t->movie)
+    // never matches and movie_565_take is never called (console: no "[movie] display" line in 30+ s of op.000):
+    // converting every frame to 565 on the output thread was pure waste. Offer a probe window of 30 frames;
+    // if the renderer never takes one, stop converting for this movie.
+    if (!s_m565_consumer && ++s_m565_offer > 30) return;
     int k = 0;
     SDL_LockMutex(s_m565_mx);
     while (k < N565 && (s_m565_busy[k] || m565_queued(k))) k++;
@@ -468,6 +476,7 @@ uint16_t *movie_565_take(uint32_t w, uint32_t h, volatile int **busy) {
         while (s_m565_qt - s_m565_qh > 3) { s_m565_qh++; s_m565_dropped++; }
         int k = s_m565_q[s_m565_qh % N565]; s_m565_qh++;
         s_m565_busy[k] = 1;
+        s_m565_consumer = 1;   // the renderer does use the 565 frames: keep converting (m565_put)
         {   // diagnostics: order and regularity of what is shown (windows of 120 presents)
             extern unsigned g_pframe;
             static double last_pts = -1; static unsigned win0, ntake, nback, maxgap, lastf;
@@ -551,7 +560,8 @@ static plm_frame_t *g_pending;
 // Video decode time: gap between two plm_decode callbacks (g_cb_t reset at the start of each plm_decode).
 // Audio: measured in its own thread.
 static uint64_t g_cb_t;
-static double g_st_vid, g_st_aud;
+static double g_st_vid;
+static volatile double g_st_aud_rate;   // ms/s of MP2 decode, measured in the audio thread's own window
 static double cb_ms(void) { uint64_t n = SDL_GetPerformanceCounter(); double d = (double)(n - g_cb_t) * 1000.0 / (double)SDL_GetPerformanceFrequency(); g_cb_t = n; return d; }
 static int g_handed;
 static void hand_frame(Movie *m, plm_frame_t *f);
@@ -750,14 +760,20 @@ static int audio_thread(void *arg) {
 #endif
     const uint32_t cap = sizeof g_ring / sizeof g_ring[0];
     double ms = 1000.0 / (double)SDL_GetPerformanceFrequency();
+    uint64_t hz = SDL_GetPerformanceFrequency(), aw0 = SDL_GetPerformanceCounter();
+    double aud_acc = 0;
     while (!m->stop && !m->ended) {
         plm_samples_t *s = NULL;
         if (m->state == 2 && (g_ring_w - g_ring_r + cap) % cap < 48000 * 2 / 4) {
             uint64_t t = SDL_GetPerformanceCounter();
             s = plm_audio_decode(m->aud);
-            g_st_aud += (double)(SDL_GetPerformanceCounter() - t) * ms;
+            aud_acc += (double)(SDL_GetPerformanceCounter() - t) * ms;
             if (s) movie_audio_push(s->interleaved, (int)s->count, plm_audio_get_samplerate(m->aud));
         }
+        // own 2 s window: the shared counter was reset by the decode thread while this thread kept adding to it,
+        // which is how "audio 2553 ms/s" (impossible) appeared in the console logs
+        uint64_t now = SDL_GetPerformanceCounter();
+        if (now - aw0 > 2 * hz) { g_st_aud_rate = aud_acc * (double)hz / (double)(now - aw0); /* ms per second */ aud_acc = 0; aw0 = now; }
         if (!s) SDL_Delay(5);
     }
     return 0;
@@ -865,7 +881,7 @@ static int decode_thread(void *arg) {
         if (now - st0 > 2 * hz) {
             double sec = (double)(now - st0) / (double)hz;
             rt_log("[movie] t=%.1f s: %.1f frames decoded/s (%.1f B skipped), %.1f delivered/s; per second: decode %.0f ms (video %.0f, audio %.0f, file read %.0f), conversion %.0f ms, Receive %.0f ms\n",
-                   plm_get_time(m->plm), m->st_ndec / sec, m->st_nskip / sec, m->st_npush / sec, m->st_dec / sec, g_st_vid / sec, g_st_aud / sec, g_st_io / sec, m->st_conv / sec, m->st_recv / sec);
+                   plm_get_time(m->plm), m->st_ndec / sec, m->st_nskip / sec, m->st_npush / sec, m->st_dec / sec, g_st_vid / sec, g_st_aud_rate, g_st_io / sec, m->st_conv / sec, m->st_recv / sec);
 #ifdef __vita__
             // real CPU time of the thread (runClocks, us) versus elapsed time: tells preemption from raw slowness
             static uint64_t run0; static uint32_t pre0, ipre0;
@@ -876,7 +892,7 @@ static int decode_thread(void *arg) {
                 run0 = ti.runClocks; pre0 = ti.threadPreemptCount; ipre0 = ti.intrPreemptCount;
             }
 #endif
-            m->st_dec = m->st_conv = m->st_recv = 0; g_st_vid = g_st_aud = g_st_io = 0; m->st_ndec = m->st_npush = m->st_nskip = 0; st0 = now;
+            m->st_dec = m->st_conv = m->st_recv = 0; g_st_vid = g_st_io = 0; m->st_ndec = m->st_npush = m->st_nskip = 0; st0 = now;
         }
         if (!got) SDL_Delay(4);
     }
@@ -900,7 +916,7 @@ M(ctl, Run) {
             if (!m->osem) m->osem = SDL_CreateSemaphore(0);
             m->ohead = m->otail = 0; m->obusy = -1; m->dec_done = 0;
             m->odropped = 0; s_movie_serial++; m565_begin();
-            g_st_vid = g_st_aud = g_st_io = 0;
+            g_st_vid = g_st_io = 0; g_st_aud_rate = 0;
             m->thread = SDL_CreateThread(decode_thread, "movie", m);
             m->othread = SDL_CreateThread(out_thread, "movie_out", m);
             if (m->aud) m->athread = SDL_CreateThread(audio_thread, "movie_audio", m);
