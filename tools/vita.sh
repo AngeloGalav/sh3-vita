@@ -55,6 +55,9 @@ need_ftp() {
 	exit 1
 }
 
+# file names in a folder: VitaShell answers NLST (--list-only) with 502, so parse LIST (names have no spaces)
+names() { curl -sS --connect-timeout 5 "$URL/${1%/}/" | awk '$1 !~ /^d/ {print $NF}'; }
+
 # vitacompanion's command port; fails quietly when there is no vitacompanion
 send() { timeout 3 bash -c 'printf "%s\n" "$2" > "/dev/tcp/$1/1338"' _ "$IP" "$1" 2>/dev/null; }
 
@@ -101,7 +104,7 @@ pull)
 	OUT=${2:-$ROOT/build/console/vita-$(date +%Y%m%d-%H%M%S)}
 	mkdir -p "$OUT"
 	got=0
-	for f in $(curl -sS --connect-timeout 5 --list-only "$URL/$DATA/"); do
+	for f in $(names "$DATA"); do
 		case "$f" in
 		sh4log*|env.txt|sh3port.ini|disp.ini|shot_*.tga|ctl.txt|*.log)
 			if ftp -f "$URL/$DATA/$f" -o "$OUT/$f" 2>/dev/null; then echo "got $f"; got=$((got + 1)); else rm -f "$OUT/$f"; fi ;;
@@ -111,7 +114,7 @@ pull)
 		ln -sfn "$(basename "$OUT")" "$ROOT/build/console/vita-latest"
 	fi
 	echo "$got files in $OUT"
-	dumps=$(curl -sS --connect-timeout 5 --list-only "$URL/ux0:/data/" | grep -E '\.(psp2dmp|sgx)(\.gz)?$' || true)
+	dumps=$(names ux0:/data | grep -E '\.(psp2dmp|sgx)(\.gz)?$' || true)
 	if [ -n "$dumps" ]; then
 		echo "crash dumps on the console (fetch one with: $0 get ux0:/data/<name>):"
 		echo "$dumps" | sed 's/^/  /'
