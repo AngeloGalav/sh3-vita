@@ -13,6 +13,9 @@ if(SH3)
   set(VITA_TITLEID  "SILH00003")
   set(VITA_LOG_DIR  "sh3")
   set(VITA_VPK_NAME "sh3.vpk")
+  # Extended memory budget (ATTRIBUTE2=12): the default app budget leaves ~207 MB of user memory, so the guest
+  # block got 163 MB and, past SH3's 114 MB image (heap base 0x07200000), a 49 MB heap; the first room needs ~70 MB.
+  set(VITA_MKSFOEX_FLAGS "${VITA_MKSFOEX_FLAGS} -d ATTRIBUTE2=12")
 else()
   set(VITA_APP_NAME "Silent Hill 4: The Room")
   set(VITA_TITLEID  "SILH00004")

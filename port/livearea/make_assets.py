@@ -1,4 +1,4 @@
-"""Generates the legacy placeholder LiveArea icon0.png / bg.png / startup.png.
+"""Generates the placeholder LiveArea icon0.png / pic0.png / bg.png / startup.png ("SH3" on a dark vignette).
 
 Running this script overwrites the current, supplied LiveArea artwork.
 
@@ -13,7 +13,7 @@ FILTER_NONE = bytes([0])
 GLYPH = {  # police 5x7
     "S": ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
     "H": ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
-    "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+    "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
 }
 
 
@@ -61,7 +61,8 @@ def with_text(base, w, h, text, scale):
     return f
 
 
-png(OUT / "icon0.png", 128, 128, with_text(bg(128, 128), 128, 128, "SH4", 5))
+png(OUT / "icon0.png", 128, 128, with_text(bg(128, 128), 128, 128, "SH3", 5))
+png(OUT / "pic0.png", 960, 544, bg(960, 544))
 png(OUT / "bg.png", 840, 500, bg(840, 500))
-png(OUT / "startup.png", 280, 158, with_text(bg(280, 158), 280, 158, "SH4", 10))
+png(OUT / "startup.png", 280, 158, with_text(bg(280, 158), 280, 158, "SH3", 10))
 print("ok")

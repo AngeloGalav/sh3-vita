@@ -232,7 +232,7 @@ static void *alloc_guest(uint32_t *size) {
         if (id >= 0) {
             void *base = NULL;
             sceKernelGetMemBlockBase(id, &base);
-            rt_log("[mem] guest memory: %u MB obtained\n", mb);
+            rt_log("[mem] guest memory: %u MB obtained (heap %u MB from 0x%08x)\n", mb, mb - (G_HEAP_BASE >> 20), G_HEAP_BASE);
             *size = mb << 20;
             return base;
         }
