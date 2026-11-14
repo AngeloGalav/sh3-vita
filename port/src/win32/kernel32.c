@@ -510,6 +510,19 @@ K(CreateFileA) {
     uint32_t access = ARG(2), disp = ARG(5);
     if (access & 0x40000000u) w32_host_path_w(gp, hp, sizeof hp); else w32_host_path(gp, hp, sizeof hp);
     const char *mode = (access & 0x40000000u) ? (disp == 3 || disp == 4 ? "r+b" : "w+b") : "rb";
+#ifdef SH3_PORT
+    // disp.ini is SH3's "still running" marker: at boot the game fopen()s it for reading, and if it is there but
+    // empty (0x5efb40) it warns "A crash occurred the last time the game was played. Using safe graphics
+    // options."; then it reopens it "wt" (empty) and only fills it on a clean exit. A console app is left with the
+    // PS button, never a clean exit, so the warning came back at every boot. Reads of disp.ini now find nothing:
+    // the game takes its no-file path (no check, no warning) and still creates the file.
+    { const char *bn = strrchr(gp ? gp : "", '\\'); bn = bn ? bn + 1 : gp;
+      if (bn && !SDL_strcasecmp(bn, "disp.ini") && !(access & 0x40000000u)) {
+          rt_log("CreateFileA(\"%s\") read refused: crash marker ignored\n", gp);
+          w32_set_last_error(c, 2);
+          STDRET(7, 0xffffffffu);
+      } }
+#endif
     // Reserve metadata before opening a possibly destructive CREATE_ALWAYS
     // handle. Host OOM must neither dereference NULL nor truncate a save/config.
     File *fl = calloc(1, sizeof *fl);
