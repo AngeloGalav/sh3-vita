@@ -39,6 +39,19 @@ uint32_t fmt_level_size(uint32_t f, uint32_t w, uint32_t h) {
 
 // Conversion of one level to RGBA8 (uncompressed formats).
 static void to_rgba(uint32_t f, const uint8_t *src, uint8_t *dst, uint32_t n) {
+#ifdef __vita__
+    if (f == FMT_A8R8G8B8 || f == FMT_X8R8G8B8) {   // BGRA -> RGBA 16 pixels at a time (same bytes as the loop below)
+        uint32_t i = 0;
+        for (; i + 16 <= n; i += 16, src += 64, dst += 64) {
+            uint8x16x4_t p = vld4q_u8(src), o;
+            o.val[0] = p.val[2]; o.val[1] = p.val[1]; o.val[2] = p.val[0];
+            o.val[3] = f == FMT_X8R8G8B8 ? vdupq_n_u8(255) : p.val[3];
+            vst4q_u8(dst, o);
+        }
+        for (; i < n; i++, src += 4, dst += 4) { dst[0] = src[2]; dst[1] = src[1]; dst[2] = src[0]; dst[3] = f == FMT_X8R8G8B8 ? 255 : src[3]; }
+        return;
+    }
+#endif
     for (uint32_t i = 0; i < n; i++, dst += 4) {
         uint32_t v;
         switch (f) {
