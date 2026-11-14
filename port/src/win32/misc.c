@@ -98,7 +98,7 @@ W(timeBeginPeriod) { STDRET(1, 0); }
 W(timeEndPeriod) { STDRET(1, 0); }
 W(timeGetTime) { STDRET(0, w32_tick_ms()); }
 
-typedef struct { SDL_TimerID id; CPU *c; uint32_t cb, user, periodic, handle; SDL_mutex *m; } MMTimer;
+typedef struct { SDL_TimerID id; CPU *c; uint32_t cb, user, periodic, handle; SDL_mutex *m; int killed; } MMTimer;
 // SH3 arms a one-shot timer about twice per frame. Each one used to get a fresh guest CPU (256 KB stack + TIB
 // on the guest heap) that was freed after the callback: constant churn of the guest heap. Idle timer CPUs now
 // wait in a small pool and are reused; arming is logged only for the first timers, then counted.
@@ -127,8 +127,11 @@ static Uint32 mm_tick(Uint32 interval, void *p) {
     SDL_LockMutex(t->m);
     if (t->c) rt_guest_call(t->c, t->cb, 5, t->handle, 0u, t->user, 0u, 0u);
     if (!t->periodic && t->c) { mm_cpu_put(t->c); t->c = NULL; }   // one-shot: back to the pool for the next arm
+    Uint32 ret = t->periodic ? interval : 0;
+    int selfk = t->killed;   // the callback killed its own timer: the kill could not free t (we hold the lock)
     SDL_UnlockMutex(t->m);
-    return t->periodic ? interval : 0;
+    if (selfk) { SDL_DestroyMutex(t->m); free(t); }
+    return ret;
 }
 W(timeSetEvent) {
     HOSTFN;
@@ -147,7 +150,30 @@ W(timeSetEvent) {
 W(timeKillEvent) {
     HOSTFN;
     MMTimer *t = h_get(ARG(1), H_TIMER);
-    if (t) { mm_killed++; SDL_RemoveTimer(t->id); SDL_LockMutex(t->m); if (t->c && t->c != c) { mm_cpu_put(t->c); t->c = NULL; } SDL_UnlockMutex(t->m); h_close(ARG(1)); }   /* a callback killing its own timer: mm_tick frees the CPU once the callback returns */
+    // SH3 arms a one-shot timer about once per frame and kills each one; the struct and its mutex used to
+    // leak every frame (~96 B/swap on the host = the Vita3K creep). Who frees t depends on who owns it last:
+    // a callback killing its own timer (t->c == c) only marks it killed — mm_tick frees it when the callback
+    // returns, since it holds t->m until then. Any other kill: RemoveTimer stops later ticks, and the lock
+    // waits for a tick already inside the callback, so after it t is unreachable and can be freed.
+    // Measured on the host (title + first room): every kill is a self-kill.
+    // Killed from elsewhere, only a one-shot whose callback already returned is freed here: SDL2 checks its cancel
+    // flag before calling a due timer, so a pending or periodic timer may still get one last mm_tick after
+    // RemoveTimer. Those are marked killed instead and mm_tick frees them if that tick comes (if it never comes,
+    // the struct leaks, as every timer did before).
+    if (t) {
+        mm_killed++;
+        SDL_RemoveTimer(t->id);
+        if (t->c == c) { t->killed = 1; h_close(ARG(1)); }   // the callback kills its own timer: mm_tick frees it when it returns
+        else {
+            SDL_LockMutex(t->m);
+            int fired = !t->periodic && !t->c;   // one-shot, callback done: SDL never calls mm_tick for it again
+            if (t->c) { mm_cpu_put(t->c); t->c = NULL; }
+            if (!fired) t->killed = 1;
+            SDL_UnlockMutex(t->m);
+            h_close(ARG(1));
+            if (fired) { SDL_DestroyMutex(t->m); free(t); }
+        }
+    }
     STDRET(1, 0);
 }
 
