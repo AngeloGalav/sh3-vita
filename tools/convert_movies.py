@@ -4,7 +4,7 @@
 The Vita port plays `<name>.mp4` with the hardware decoder when it sits next to
 `<name>.000` in the game's movie folder; without it the built-in pl_mpeg path is
 used. Run this on a PC that owns a copy of the game, then copy the generated
-`.mp4` files to `ux0:data/sh3/movie/` on the Vita (same folder as the `.000`).
+`.mp4` files to `ux0:data/sh3-vita/data/movie/` on the Vita (same folder as the `.000`).
 
 The demangle step is the verified reference algorithm (j3_movie.py, bit-exact
 with port/src/codec/movie000.c): the 0x8000 header carries an MSVC-LCG seed, the

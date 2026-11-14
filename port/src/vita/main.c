@@ -32,9 +32,9 @@ unsigned int sceLibcHeapSize = 32 * 1024 * 1024;
 unsigned int sceUserMainThreadStackSize = 4 * 1024 * 1024;
 
 #ifdef SH3_PORT
-#define DATA_DIR "ux0:data/sh3"
+#define DATA_DIR "ux0:data/sh3-vita"
 #define GAME_EXE "sh3.exe"
-#define GAME_FOLDER "sh3"
+#define GAME_FOLDER "sh3-vita"
 #else
 #define DATA_DIR "ux0:data/sh4"
 #define GAME_EXE "SILENT HILL 4.exe"
@@ -234,7 +234,7 @@ static void boot_check_index(void) {
 static void boot_checks(void) {
     if (!file_exists(DATA_DIR "/" GAME_EXE) || !file_exists(DATA_DIR "/data")) {
 #ifdef SH3_PORT
-        static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh3/", "", "Copy sh3.exe and the data folder", "from your own copy of the game", "to ux0:data/sh3/ (see README)."};
+        static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh3-vita/", "", "Copy sh3.exe and the data folder", "from your own copy of the game", "to ux0:data/sh3/ (see README)."};
 #else
         static const char *const m[] = {"GAME FILES NOT FOUND", "", "Expected in ux0:data/sh4/", "", "Run sh4prep on your PC with your own copy", "of the game, then copy the sh4 folder", "to ux0:data/ on the Vita (see README)."};
 #endif

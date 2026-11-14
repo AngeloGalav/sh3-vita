@@ -8,12 +8,12 @@
 #   tools/vita.sh pull [dir]        download the logs, env.txt, sh3port.ini, screenshots
 #                                   (default build/console/vita-<date-time>; build/console/vita-latest points at it)
 #                                   and list crash dumps left in ux0:data
-#   tools/vita.sh put <file> [path] upload a file (default ux0:/data/sh3/, e.g. an env.txt)
-#   tools/vita.sh ls [path]         list a folder (default ux0:/data/sh3/)
+#   tools/vita.sh put <file> [path] upload a file (default ux0:/data/sh3-vita/, e.g. an env.txt)
+#   tools/vita.sh ls [path]         list a folder (default ux0:/data/sh3-vita/)
 #   tools/vita.sh get <path> [dir]  download one file, e.g. ux0:/data/psp2core-x.psp2dmp
-#   tools/vita.sh diag on|off       upload tools/env-diag.txt as ux0:/data/sh3/env.txt (crash-proof log,
+#   tools/vita.sh diag on|off       upload tools/env-diag.txt as ux0:/data/sh3-vita/env.txt (crash-proof log,
 #                                   stats every 2 s, big VRAM drops per draw; slower), or delete env.txt
-#   tools/vita.sh rmdisp            delete ux0:/data/sh3/disp.ini (the game's "crashed last time" marker)
+#   tools/vita.sh rmdisp            delete ux0:/data/sh3-vita/disp.ini (the game's "crashed last time" marker)
 #   tools/vita.sh run | stop        start or close the game (vitacompanion only)
 #
 # The FTP server is VitaShell's (press SELECT once START > Main settings > SELECT button is set to FTP,
@@ -23,7 +23,7 @@
 set -e
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 TITLE=SILH00003
-DATA=ux0:/data/sh3
+DATA=ux0:/data/sh3-vita
 BUILD=${VITA_BUILD:-$ROOT/build/vita-sh3-clean}
 IP_FILE=$ROOT/build/console/vita_ip
 PORT=${VITA_FTP_PORT:-1337}

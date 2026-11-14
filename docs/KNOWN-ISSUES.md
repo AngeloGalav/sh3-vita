@@ -25,8 +25,8 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 ## Things to know
 
 - **Requirements:** a Vita with custom firmware, `ur0:data/libshacccg.suprx`, and the 2003 PC release of the game (`sh3.exe` SHA-256 `8ff8f748…0918`). The package sets the extended memory budget; without it the game runs out of memory.
-- **Controls file:** if the game has written `ux0:data/sh3/key.ini`, its bindings replace the port's layout. Delete it to get the default layout back.
+- **Controls file:** if the game has written `ux0:data/sh3-vita/key.ini`, its bindings replace the port's layout. Delete it to get the default layout back.
 - **Resolution:** the game always renders at 960x544; the Options resolution row shows only that mode.
-- **First launch:** the shaders are compiled on the console the first time each one is needed, so the first minutes stutter more than later runs (the compiled shaders are kept in `ux0:data/sh3/shc-r1`).
-- **Logs:** `ux0:data/sh3/sh4log.txt` (the name is inherited from the SH4 port). Include it when reporting a problem.
+- **First launch:** the shaders are compiled on the console the first time each one is needed, so the first minutes stutter more than later runs (the compiled shaders are kept in `ux0:data/sh3-vita/shc-r1`).
+- **Logs:** `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from the SH4 port). Include it when reporting a problem.
 - **Vita3K:** the emulator is useful for some checks but does not behave like the console here; results from it are not console results.

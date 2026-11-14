@@ -41,11 +41,11 @@ Built and checked on the PC but not yet heard or seen on the console: in-game so
 1. Apply the port's byte patches (widescreen, title menu without Exit) to a copy of your executable: `python3 tools/patch_exe.py <your sh3.exe> game/sh3.exe re/out/functions-sh3.json` (checks every site against the original bytes and adds the one extra function the patches call to `functions-sh3.json`; run it on an unpatched copy).
 2. Generate the C code from the patched copy: `python3 recomp/x86rec.py --target sh3` (reads `game/sh3.exe` and `re/out/functions-sh3.json`, writes `port/gen-sh3/`, takes a minute or two; the output is never committed).
 3. Build the package: `docker/build-vita.sh`. It writes `sh3.vpk`; title ID `SILH00003`. Install it with VitaShell.
-4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`) unless you convert them as below: a converted `.mp4` can then replace its `.000`.
+4. Copy `sh3.exe` and the `data` folder from your game to `ux0:data/sh3-vita/` on the Vita. If either is missing, the port shows a "GAME FILES NOT FOUND" screen. Keep the movie files (`data/movie/*.000`) unless you convert them as below: a converted `.mp4` can then replace its `.000`.
 
-Optional, for full-rate movies on the Vita: `python3 tools/convert_movies.py "<your game>/data/movie"` (needs ffmpeg and ffprobe) demangles each `.000` with the verified reference algorithm and encodes an MP4 (H.264 High level 3.1, yuv420p + AAC-LC 48 kHz stereo, duration verified) next to it. Copy those `.mp4` files to `ux0:data/sh3/data/movie/` and the port plays them with the Vita's hardware video decoder (sceAvPlayer) instead of decoding in software: steady 30 fps and clean audio even when the memory card reads slowly. Without the files the built-in decoder is used unchanged. The converted files are derived from game data: never commit them, never share them.
+Optional, for full-rate movies on the Vita: `python3 tools/convert_movies.py "<your game>/data/movie"` (needs ffmpeg and ffprobe) demangles each `.000` with the verified reference algorithm and encodes an MP4 (H.264 High level 3.1, yuv420p + AAC-LC 48 kHz stereo, duration verified) next to it. Copy those `.mp4` files to `ux0:data/sh3-vita/data/movie/` and the port plays them with the Vita's hardware video decoder (sceAvPlayer) instead of decoding in software: steady 30 fps and clean audio even when the memory card reads slowly. Without the files the built-in decoder is used unchanged. The converted files are derived from game data: never commit them, never share them.
 
-Logs go to `ux0:data/sh3/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
+Logs go to `ux0:data/sh3-vita/sh4log.txt` (the name is inherited from SH4; earlier runs are kept as numbered copies).
 
 With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP, or the vitacompanion plugin), `tools/vita.sh` does the round trip from the computer: `tools/vita.sh ip <address>` once, then `tools/vita.sh vpk` (upload `sh3.vpk` to `ux0:data/`), `tools/vita.sh install` (replace only the eboot after a rebuild), `tools/vita.sh pull` (logs, `env.txt`, screenshots and a list of crash dumps into `build/console/`), `tools/vita.sh rmdisp` (clear the game's "crashed last time" marker). For a crash, `tools/vita.sh diag on` before the run uploads `tools/env-diag.txt` as `env.txt`: the log is written line by line (`SH3_LOGSYNC=1`, slower) so it keeps its last lines, with stats every 2 s and large VRAM drops; `diag off` removes it. This project provides no download of game files or of any Sony module.
 
@@ -64,7 +64,7 @@ With FTP on the console (VitaShell: SELECT once its SELECT button is set to FTP,
 | Left stick / d-pad | Move | Move the cursor |
 | Right stick | Camera | |
 
-These are the game's own pad defaults, rearranged for the Vita. If the game has written a `key.ini` to `ux0:data/sh3/`, that file wins: delete it to get this layout back.
+These are the game's own pad defaults, rearranged for the Vita. If the game has written a `key.ini` to `ux0:data/sh3-vita/`, that file wins: delete it to get this layout back.
 
 ## Options
 
@@ -81,7 +81,7 @@ menus (the CJK menus keep the original label).
 | High | RGBA8 everywhere. |
 
 The choice is applied when you confirm and is saved as `textures=0|1|2` in
-`sh3port.ini` in the game folder (`ux0:data/sh3/` on the Vita). It has been
+`sh3port.ini` in the game folder (`ux0:data/sh3-vita/` on the Vita). It has been
 looked at on the PC with the Vita texture path emulated; its VRAM and speed cost
 on a Vita is not measured.
 
@@ -116,7 +116,7 @@ The Vita toolchain runs in Docker (`docker/build-vita.sh`); the PC test image is
 ## Debug environment switches
 
 For development. They are read with `getenv`. On the Vita, put one `KEY=VALUE`
-line per variable in `ux0:data/sh3/env.txt` (read at startup, before vitaGL
+line per variable in `ux0:data/sh3-vita/env.txt` (read at startup, before vitaGL
 initialises). On the PC, export them as ordinary environment variables. Defaults
 are what the code does with the variable unset.
 
