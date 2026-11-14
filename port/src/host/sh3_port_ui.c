@@ -65,7 +65,7 @@ static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
     static const char *const L[][2] = {
         {"\\hvallfrr's sh4vita", "\\hgithub.com/vallfrr/sh4vita"},
         {"\\hcutarev's sh3-nx", "\\hgithub.com/cutarev/sh3-nx"},
-        {"\\hAngeloGalav's sh2-vita", "\\hgithub.com/AngeloGalav/sh2-vita"},
+        {"\\hRinnegatamante's vitaGL", "\\hgithub.com/Rinnegatamante/vitaGL"},
         {"\\hThirteenAG's Widescreen Fix", "\\hgithub.com/ThirteenAG/WidescreenFixesPack"},
     };
     for (int i = 0; i < 4; i++) {

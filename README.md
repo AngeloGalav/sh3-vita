@@ -173,9 +173,9 @@ The in-game credits page lists the first four:
 
 - [sh4vita](https://github.com/vallfrr/sh4vita) by vallfrr, which this port is based on
 - [sh3-nx](https://github.com/cutarev/sh3-nx) by cutarev, the rendering reference
-- [sh2-vita](https://github.com/AngeloGalav/sh2-vita) by AngeloGalav
+- [vitaGL](https://github.com/Rinnegatamante/vitaGL) by Rinnegatamante, the OpenGL layer the port draws with (and vitaShaRK, its shader compiler bridge)
 - [SilentHill3.WidescreenFix](https://github.com/ThirteenAG/WidescreenFixesPack) by ThirteenAG, ported for the widescreen
-- [vitaGL](https://github.com/Rinnegatamante/vitaGL) and vitaShaRK by Rinnegatamante, the [VitaSDK](https://vitasdk.org/) team and [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski
+- [sh2-vita](https://github.com/AngeloGalav/sh2-vita) by AngeloGalav, the [VitaSDK](https://vitasdk.org/) team and [pl_mpeg](https://github.com/phoboslab/pl_mpeg) by Dominic Szablewski
 
 AI-assisted port by [AngeloGalav](https://github.com/AngeloGalav). Third-party code compiled into the port is listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), with texts in [LICENSES/](LICENSES/).
 
