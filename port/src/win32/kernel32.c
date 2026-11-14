@@ -493,7 +493,7 @@ K(CreateThread) {
 #define PF_MIN 262144u
 #define PF_MAX 1310720u
 typedef struct {
-    FILE *f; char path[600]; int ro, pfreuse;
+    FILE *f; char path[600]; int ro, pfreuse, mvstub;
     uint8_t *pf; uint32_t pfcap, pfwant; long pfpos; SDL_Thread *th;
     SDL_atomic_t pfgot, pfdone, pfabort;
     struct { long key, pos; uint32_t n; } nx[8]; unsigned nxi;
@@ -503,6 +503,24 @@ void movie_note_file(const char *host);
 static uint32_t s_pf_mem;
 static uint32_t file_error(int error, uint32_t fallback);
 static uint32_t file_status(uint32_t error);
+// The movie source filter's header check (sh3.exe FUN_00405680): the first 0x8000 bytes must decrypt
+// to all zeros under the CRT-LCG keystream whose seed the game gathers from 4 fixed offsets of the same
+// block (and then zeroes). A stand-in handle for a deleted .000 serves this synthesized block: any seed
+// works when the block is the keystream itself with the seed's own bytes embedded at the gather offsets
+// (little-endian words, as the guest reads them). Verified against the game's check in tools/j3_movie.py.
+static const uint8_t *mv_header(void) {
+    static uint8_t buf[0x8000];
+    static int done;
+    if (!done) {
+        uint32_t seed = 0x12345678u, st = seed;
+        for (int i = 0; i < 0x2000; i++) { st = st * 0x5d588b65u + 1u; memcpy(buf + 4 * i, &st, 4); }
+        buf[0x2dde] = (uint8_t)seed; buf[0x3d40] = (uint8_t)(seed >> 8);
+        buf[0x2a5c] = (uint8_t)(seed >> 16); buf[0x55e2] = (uint8_t)(seed >> 24);
+        done = 1;
+    }
+    return buf;
+}
+
 K(CreateFileA) {
     HOSTFN;
     char hp[600];
@@ -530,6 +548,19 @@ K(CreateFileA) {
     errno = 0;
     FILE *f = fopen(hp, mode);
     if (!f && errno == ENOENT && (access & 0x40000000u) && disp == 4) f = fopen(hp, "w+b"); // OPEN_ALWAYS
+    if (!f && errno == ENOENT && !(access & 0x40000000u)) {
+        // A movie .000 the user replaced with a converted .mp4 (tools/convert_movies.py): the game's own
+        // source filter opens it while building the graph, and the graph fails without it. The converted
+        // file stands in for the open (movie_note_file below keeps recording the .000 path, so the port's
+        // decoder still finds the .mp4); the handle is flagged mvstub because the filter then validates
+        // the first 0x8000 bytes (FUN_00405680) — ReadFile serves the synthesized header block for that.
+        size_t hn = strlen(hp);
+        if (hn > 4 && !SDL_strcasecmp(hp + hn - 4, ".000")) {
+            char alt[600];
+            snprintf(alt, sizeof alt, "%.*s.mp4", (int)hn - 4, hp);
+            if ((f = fopen(alt, "rb"))) { fl->mvstub = 1; rt_log("CreateFileA(\"%s\") -> the converted movie stands in (%s)\n", gp, alt); }
+        }
+    }
     if (!f) {
         uint32_t error = file_error(errno, 2);
         free(fl);
@@ -771,9 +802,21 @@ K(ReadFile) {
         if (pos0 < 0) error = file_error(errno, 25);
     }
     if (!error && getenv("SH3_READLOG")) rt_log("[read] h=%x pos=%ld n=%u buf=%x\n", ARG(1), pos0, n, buf);
+    if (!error && f->mvstub) {
+        // Stand-in handle for a deleted .000: the game's source filter validates the movie header
+        // (FUN_00405680 reads 0x8000 bytes at position 0 and requires them to decrypt to zeros) —
+        // serve the synthesized block instead of the .mp4 bytes; the guest never reads past it.
+        uint32_t p = (uint32_t)pos0 < 0x8000u ? (uint32_t)pos0 : 0x8000u;
+        uint32_t avail = 0x8000u - p;
+        got = n < avail ? n : avail;
+        memcpy(mb + buf, mv_header() + p, got);
+        if (got < n) SDL_memset(mb + buf + got, 0, n - got);   // EOF padding, same contract as below
+        errno = 0;
+        if (fseek(f->f, pos0 + (long)got, SEEK_SET)) error = file_error(errno, 25);
+    }
     uint64_t t_io = SDL_GetPerformanceCounter();
     int pfhit = 0, headhit = 0;
-    if (!error) {
+    if (!error && !f->mvstub) {
         clearerr(f->f);
         errno = 0;
         if(c==g_main_cpu)pf_head_pressure(f,n);
@@ -1013,7 +1056,18 @@ K(GetFileAttributesA) {
     struct stat st;
     if (!GSTR(ARG(1))) { w32_set_last_error(c, 2); STDRET(1, 0xffffffffu); }
     w32_host_path(GSTR(ARG(1)), hp, sizeof hp);
-    if (stat(hp, &st)) { rt_log("GetFileAttributesA(\"%s\") -> not found (%s)\n", GSTR(ARG(1)) ? GSTR(ARG(1)) : "(null)", hp); w32_set_last_error(c, 2); STDRET(1, 0xffffffffu); }
+    if (stat(hp, &st)) {
+        // A movie .000 the user replaced with a converted .mp4 (tools/convert_movies.py) counts as present:
+        // the game's install check (data/movie/op.000) must pass with only the .mp4 on the card.
+        size_t hn = strlen(hp);
+        if (hn > 4 && !SDL_strcasecmp(hp + hn - 4, ".000")) {
+            char alt[600];
+            snprintf(alt, sizeof alt, "%.*s.mp4", (int)hn - 4, hp);
+            if (!stat(alt, &st)) { rt_log("GetFileAttributesA(\"%s\") -> the converted movie stands in (%s)\n", GSTR(ARG(1)), alt); STDRET(1, 0x80); }
+        }
+        rt_log("GetFileAttributesA(\"%s\") -> not found (%s)\n", GSTR(ARG(1)) ? GSTR(ARG(1)) : "(null)", hp);
+        w32_set_last_error(c, 2); STDRET(1, 0xffffffffu);
+    }
     STDRET(1, S_ISDIR(st.st_mode) ? 0x10 : 0x80);
 }
 K(SetFileAttributesA) { STDRET(2, 1); }
