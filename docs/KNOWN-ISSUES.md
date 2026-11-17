@@ -1,6 +1,6 @@
 # Known issues
 
-State of the PS Vita build as of 15 November 2026 (version 0.0.1 plus the changes after it). "Console" means
+State of the PS Vita build as of 17 November 2026 (version 0.0.2). "Console" means
 seen on a real PS Vita; "PC" means the Linux test build only.
 
 ## Open
