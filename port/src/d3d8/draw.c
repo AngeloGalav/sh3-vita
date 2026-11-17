@@ -387,6 +387,11 @@ static char *ffp_vs(uint32_t fvf) {
                 "  gl_Position = vec4(q.x, q.y * uFlip.x, q.z * 2.0 - q.w, q.w);\n");
     catf(&s, "  vD0 = %s;\n  vD1 = %s;\n", fvf & 0x40 ? "aV5.zyxw" : "vec4(1.0)", fvf & 0x80 ? "aV6.zyxw" : "vec4(0.0)");
     cat(&s, "  vFog = vD1.w;\n");   // FFP vertex fog = specular alpha
+    // D3D8 default point size is 1 pixel. GLES leaves it undefined when the shader does not write it: on the Vita (GXM)
+    // the lens-flare visibility point (F_0049fac0: POINTLIST, XYZRHW|DIFFUSE, drawn black with ZFUNC ALWAYS then white
+    // with LEQUAL at the light's screen position) came out as a dark square over the flashlight. Desktop GL ignores this
+    // write unless GL_PROGRAM_POINT_SIZE is enabled, so the host keeps its 1-pixel points.
+    cat(&s, "  gl_PointSize = 1.0;\n");
     for (uint32_t i = 0; i < 4; i++) catf(&s, "  vT%u = %s;\n", i, i < ntex ? (i == 0 ? "aV7" : i == 1 ? "aV8" : i == 2 ? "aV9" : "aV10") : "vec4(0.0, 0.0, 0.0, 1.0)");
     cat(&s, "}\n");
     return s;
