@@ -1,18 +1,18 @@
-# Reprise du projet (sh3-port)
+# Resuming the project (sh3-port)
 
-Règles héritées du dépôt SH4 (`../sh3-vita/AGENTS.md`), adaptées à SH3.
+Rules inherited from the SH4 repo (`../sh3-vita/AGENTS.md`), adapted to SH3.
 
-- Avant de modifier le code, lancer un test ou utiliser l'émulateur, lire
-  `docs/PORTAGE-SH3-2026-11-11.md` (§9 jalons, §11 décisions) puis le dernier
-  `docs/HANDOFF.md` s'il existe.
-- **Oracle** : `game/sh3.exe` SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`
-  (version 2003 du dossier fourni ; aucune version Steam/GOG n'existe).
-- **Banc** : PC + émulateur Vita3K+ (`../sh2-vita/useful_resources/Vita3K+-x86_64-v1.3.3.AppImage`,
-  non 100 % fidèle). Aucun résultat d'émulateur ne vaut validation console.
-  Une Vita physique pourra être utilisée plus tard (décision 2026-11-11).
-- Distinguer source, candidat compilé, version installée, paquet des testeurs
-  et publication. Ne pas annoncer de gain ou de validation sans preuve.
-- Ne pas versionner `game/`, `port/gen*/`, `re/out/` ni les preuves sous `build/`.
+- Before changing code, running a test or using the emulator, read
+  `docs/PORTAGE-SH3-2026-11-11.md` (§9 milestones, §11 decisions) and then the
+  latest `docs/HANDOFF.md` if it exists.
+- **Oracle**: `game/sh3.exe` SHA-256 `8ff8f74806f55843b9bc277508b17c8926999f292c65dbe7949325087d460918`
+  (the 2003 version from the supplied folder; no Steam/GOG version exists).
+- **Bench**: PC + Vita3K+ emulator (`../sh2-vita/useful_resources/Vita3K+-x86_64-v1.3.3.AppImage`,
+  not 100 % faithful). No emulator result counts as console validation.
+  A real Vita may be used later (decision 2026-11-11).
+- Distinguish source, compiled candidate, installed version, tester package
+  and publication. Never claim a gain or a validation without proof.
+- Do not version `game/`, `port/gen*/`, `re/out/` or the evidence under `build/`.
 - Commits (updated 2026-11-12, by Angelo Galavotti): author and committer are
   `Angelo Galavotti <agalavottib@gmail.com>`. Every commit message has a
   description written in Heather Mason's voice (Silent Hill 3), keeping all
@@ -22,4 +22,5 @@ Règles héritées du dépôt SH4 (`../sh3-vita/AGENTS.md`), adaptées à SH3.
   Sonnet 5.5 (`<noreply@anthropic.com>`) for Sonnet work, and the matching
   Claude tag for Opus later. Older commits by `vallfrr` keep their author.
   No subagents, recurring automation or publishing without Angelo's agreement.
-- Réponses en anglais avec Valentin (instruction du 2026-11-11).
+- Replies in English with Angelo (updated 2026-11-17; the 2026-11-11
+  instruction said Valentin).
