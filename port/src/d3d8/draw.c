@@ -375,10 +375,12 @@ static char *ffp_vs(uint32_t fvf) {
     cat(&s, "uniform vec4 uVp;\nuniform vec4 uFlip;\nuniform vec4 c[4];\n"
             "varying vec4 vD0;\nvarying vec4 vD1;\nvarying vec4 vT0;\nvarying vec4 vT1;\nvarying vec4 vT2;\nvarying vec4 vT3;\nvarying float vFog;\nvoid main() {\n");
     if (pos == 0x4) // XYZRHW: screen coordinates (D3D pixel centre = integer)
+        // D3D clamps projected depth to [0,1] and never clips on z; GL clips z/w outside [-1,1].
+        // The map's player-arrow and page-arrow quads carry z=1.00001 and vanished without the clamp.
         cat(&s, "  float w = aV0.w == 0.0 ? 1.0 : 1.0 / aV0.w;\n"
                 "  gl_Position = vec4(((aV0.x + 0.5 - uVp.x) / uVp.z) * 2.0 - 1.0,\n"
                 "                     (1.0 - ((aV0.y + 0.5 - uVp.y) / uVp.w) * 2.0) * uFlip.x,\n"
-                "                     aV0.z * 2.0 - 1.0, 1.0) * w;\n");
+                "                     clamp(aV0.z, 0.0, 1.0) * 2.0 - 1.0, 1.0) * w;\n");
     else // XYZ: world*view*projection (rows of c[0..3], D3D row-vector convention)
         cat(&s, "  vec4 p = vec4(aV0.xyz, 1.0);\n"
                 "  vec4 q = vec4(dot(p, c[0]), dot(p, c[1]), dot(p, c[2]), dot(p, c[3]));\n"
