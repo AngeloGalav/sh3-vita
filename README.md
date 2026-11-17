@@ -1,7 +1,7 @@
 <h1 align="center">sh3-vita: Silent Hill 3 for PlayStation Vita</h1>
 
 <p align="center">
-  An experimental static-recompilation port of the 2003 PC game. Version 0.0.1.<br>
+  An experimental static-recompilation port of the 2003 PC game.<br>
   Bring your own copy of the game.
 </p>
 
@@ -16,7 +16,7 @@ sh3-vita runs Silent Hill 3 from the PC version's own data. Unlike [sh2-vita](ht
 **sh3-vita contains no game data.** You need your own copy of the 2003 PC game.
 
 > [!WARNING]
-> 0.0.1 is a development snapshot, not a finished release. It has been played on a real PS Vita through the opening and the first areas only. See [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) before trying it.
+> This is a development snapshot, not a finished release. It has been played on a real PS Vita through the opening and the first areas only. See [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md) before trying it.
 
 ## What it does
 
