@@ -7,7 +7,6 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 
 | Issue | Where | Notes |
 |---|---|---|
-| Lens flares not rendered properly | Console | Especially the flashlight's: a dark rectangle where the glow should be. The flare is drawn with the right state and looks correct on the PC; on the Vita its additive blend appears to be lost, so the mostly black flare texture covers the scene. Under investigation. |
 | Performance: 20 to 30 fps depending on the area | Console | The 30 fps cap holds in lighter areas; heavier ones need ~35–47 ms of game code per frame and run at about 20 fps. Loading spots drop briefly. |
 | Movies at about 20 fps from the original `.000` files | Console | The game copies every frame into its 512x512 movie texture and the port re-uploads it each frame. Convert the movies to MP4 (README, Install): the hardware decoder plays them at 30 fps. |
 | MP4 movies: fades drawn under the video | Console | Fades and overlays the game draws over a movie end up under the MP4 video. The MP4 player keeps 32 MB of video memory aside. |
@@ -22,6 +21,11 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 - The Vita button layout described in the README.
 - In-game sound effects (footsteps, doors, items).
 - Saving and loading a game.
+
+## Confirmed on the console (17 November 2026)
+
+- Lens flares, including the one from Heather's flashlight: the dark square over the lens is gone (the flare's 1-pixel visibility point was drawn at an undefined size on the Vita).
+- The map shows Heather's arrow and the page arrows again.
 
 ## Things to know
 

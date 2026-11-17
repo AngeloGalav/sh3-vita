@@ -31,7 +31,6 @@ On a real PS Vita (November 2026, extended memory budget, `libshacccg.suprx` ins
 
 ## Known issues
 
-- Lens flares, especially the one from Heather's flashlight, are not rendered properly yet (a dark rectangle where the glow should be).
 - Performance can still be improved: depending on the area the game runs between 20 and 30 fps.
 
 More detail, and what has not been tested yet: [docs/KNOWN-ISSUES.md](docs/KNOWN-ISSUES.md).
