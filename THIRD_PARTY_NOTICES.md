@@ -39,7 +39,7 @@ These must be inventoried from the exact VitaSDK installation that builds a rele
 
 ## Items without a recorded origin
 
-- LiveArea artwork in `port/livearea/` (`icon0.png`, `pic0.png`, `bg.png`, `startup.png`, `template.xml`). `make_assets.py` generates only a placeholder set and says the current artwork was supplied; its author and license are not recorded in the repository. Settle this before any release.
+- LiveArea artwork in `port/livearea/` (`icon0.png`, `pic0.png`, `bg.png`, `startup.png`, `template.xml`). The artwork was supplied; its author and license are not recorded in the repository. Settle this before any release.
 - The in-game credits page names vallfrr's sh4vita, cutarev's sh3-nx, AngeloGalav's sh2-vita and the Silent Hill 3 PC Fix by Steam006. No source file in `port/src` states that code was copied from sh3-nx, sh2-vita or the PC Fix, and no license text for them is in this repository. The recompiler and shim derive from sh4vita; no separate license file for it is kept here.
 
 ## Project license
