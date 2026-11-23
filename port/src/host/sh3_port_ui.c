@@ -51,16 +51,21 @@ static int credits_done = -1;
 static uint32_t credits_t0;
 #define CREDITS_Y 9              // the block's top offset: centres it vertically in the 448-high 2D space
 
+// Glyph size for the credits, given its height in the 2D space. That space is 512x448 and fills a 4:3 area
+// (x scale 4/3*h/512, y scale h/448), so one 2D unit is 7/6 as wide as it is tall on screen: a w = h glyph
+// comes out stretched. w = h*6/7 keeps the letters' own proportions.
+static void glyph(CPU *c, unsigned h) { rt_guest_call(c, 0x5fa540, 2, (h * 6 + 3) / 7, h); }
+
 static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
     uint32_t sp = c->esp;
     c->esp -= 0x40;
     uint32_t ext = c->esp;
     unsigned w = a, g = a * 5 / 8;
-    rt_guest_call(c, 0x5fa540, 2, 0x18, 0x18);
+    glyph(c, 0x18);
     text(c, ext, "\\hAI-assisted port by AngeloGalav", 256, CREDITS_Y + 76, 1, w, 0x80);
-    rt_guest_call(c, 0x5fa540, 2, 0x12, 0x12);
+    glyph(c, 0x12);
     text(c, ext, "\\hgithub.com/AngeloGalav", 256, CREDITS_Y + 108, 1, g, 0x80);
-    rt_guest_call(c, 0x5fa540, 2, 0x18, 0x18);
+    glyph(c, 0x18);
     text(c, ext, "\\hBased on the work of:", 256, CREDITS_Y + 158, 1, w, 0x80);
     static const char *const L[][2] = {
         {"\\hvallfrr's sh4vita", "\\hgithub.com/vallfrr/sh4vita"},
@@ -69,9 +74,9 @@ static void credits_draw(CPU *c, unsigned a) {   // a: 0..128 (fade)
         {"\\hThirteenAG's Widescreen Fix", "\\hgithub.com/ThirteenAG/WidescreenFixesPack"},
     };
     for (int i = 0; i < 4; i++) {
-        rt_guest_call(c, 0x5fa540, 2, 0x16, 0x16);
+        glyph(c, 0x16);
         text(c, ext, L[i][0], 256, CREDITS_Y + 196 + 58 * i, 1, w, 0x80);
-        rt_guest_call(c, 0x5fa540, 2, 0x12, 0x12);
+        glyph(c, 0x12);
         text(c, ext, L[i][1], 256, CREDITS_Y + 222 + 58 * i, 1, g, 0x80);
     }
     rt_guest_call(c, 0x5fa570, 0);
