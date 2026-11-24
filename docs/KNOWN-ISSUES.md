@@ -7,7 +7,7 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 
 | Issue | Where | Notes |
 |---|---|---|
-| Lens flares not drawn | Console | The glow of lights such as Heather's flashlight does not appear on the Vita; it does on the PC. The dark square that used to cover the flashlight is fixed. Under investigation. |
+| Lens flares not hidden by walls | Console | Lens flares and halos are missing in 0.0.2 and fixed in the source after it. The fix skips the game's visibility test (as its own `lensflare_ztest` setting does), so a light behind an obstacle may keep its flare. `SH3_LENSFORCE=0` in env.txt restores the test. |
 | Performance: 20 to 30 fps depending on the area | Console | The 30 fps cap holds in lighter areas; heavier ones need ~35–47 ms of game code per frame and run at about 20 fps. Loading spots drop briefly. |
 | Movies at about 20 fps from the original `.000` files | Console | The game copies every frame into its 512x512 movie texture and the port re-uploads it each frame. Convert the movies to MP4 (README, Install): the hardware decoder plays them at 30 fps. |
 | MP4 movies: fades drawn under the video | Console | Fades and overlays the game draws over a movie end up under the MP4 video. The MP4 player keeps 32 MB of video memory aside. |
@@ -27,6 +27,10 @@ seen on a real PS Vita; "PC" means the Linux test build only.
 
 - The dark square over Heather's flashlight is gone (the flare's 1-pixel visibility point was drawn at an undefined size on the Vita).
 - The map shows Heather's arrow and the page arrows again.
+
+## Confirmed on the console (24 November 2026, after 0.0.2)
+
+- Lens flares and light halos are drawn, in the flashlight cutscene.
 
 ## Things to know
 

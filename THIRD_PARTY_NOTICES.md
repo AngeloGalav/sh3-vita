@@ -21,6 +21,7 @@ Scope: this list was made from `port/CMakeLists.txt` (the Vita build, SH3 on by 
 ## Ported from third-party source
 
 - **SilentHill3.WidescreenFix** (WidescreenFixesPack), ThirteenAG and contributors: [source](https://github.com/ThirteenAG/WidescreenFixesPack), GPL version 3 (the repository's `license` file at revision `7bce79ffaeee61f95db59a68b35a150cd8644223`). Text: `LICENSES/GPL-3.0.txt`. Its patch sites and logic were rewritten for the static recompiler as `tools/patch_exe.py` (byte patches applied to the user's own `sh3.exe` before recompiling) and `port/src/host/sh3_widescreen.c`; [sh3-nx](https://github.com/cutarev/sh3-nx) was used as a reference for the approach and addresses only (it has no license file, so no code was taken from it).
+- **sh3vita**, vallfrr: [source](https://github.com/vallfrr/sh3vita), GPL version 3. The idea of forcing the game's `lensflare_ztest` setting (`port/src/host/sh3_lensflare.c`) comes from its `port/diag_lens_query.c`; the code here is its own.
 
 ## Toolchain runtime pulled in by the link line (`stdc++ m z`, newlib, libgcc)
 

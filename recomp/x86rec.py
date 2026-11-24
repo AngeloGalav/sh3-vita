@@ -348,6 +348,7 @@ if TARGET == "sh3":
         0x43ab80: "nat_ws_scalex",    # horizontal camera scale: Hor+ in gameplay, 4:3 width in cutscenes
         0x43abc0: "nat_ws_scaley",    # vertical camera scale: cutscenes lose height instead of width
         0x5e3380: "nat_opt_page_lr",  # Options input poll: pad L/R raise the page states 7/8
+        0x5ef950: "nat_cfg_lens",     # settings getter: "lensflare_ztest" -> 1, the game's own flare-probe bypass (src/host/sh3_lensflare.c)
         # Hot math of the static runtime (console profile 2026-11-14), src/host/sh3_natives.c; the originals
         # stay as F_xxx_orig for SH3_NATVERIFY=1:
         0x662c40: "nat_crt_ftol2",       # _ftol2: ST(0) truncated to int64 in edx:eax, popped
